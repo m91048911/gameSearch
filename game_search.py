@@ -1,0 +1,388 @@
+"""
+게임 일정 검색 기능
+
+Supabase의 games 테이블(name_en, name_ko, official_domains)에서 게임 목록을,
+topics 테이블에서 검색 주제 목록(및 캘린더 카테고리)을 가져와
+Tavily로 검색하고 (official_domains가 있으면 그 도메인으로만 검색을 제한해 공식 정보만 수집),
+Gemini(무료 티어)로
+1) 검색 결과에서 날짜가 있는 개별 이벤트(캘린더에 바로 찍을 수 있는 형태)를 추출하고
+2) 추출한 이벤트가 실제 출처 내용과 일치하는지 검증한 뒤
+3) game_events 테이블에 결과를 저장한다 (schema.sql 참고).
+
+game_events는 gameInfo 프론트엔드(https://github.com/m91048911/gameInfo)의
+ScheduleItem 타입(date/title/category/genre/note)과 1:1로 대응하도록 만들어졌다.
+
+검색 항목은 topics 테이블에서 관리한다 (기본값: 버전 업데이트 날짜 / 캐릭터 픽업 기간 / 공식방송 일정).
+새 항목이 필요하면 코드 수정 없이 topics 테이블에 행만 추가하면 된다.
+topics.calendar_category는 프론트엔드 MenuKey('update' | 'pickup' | 'broadcast' | 'launch')와 매핑된다.
+
+인자 없이 실행: Supabase games/topics 전체를 조회해 검색 + DB 저장 (cron 운영 모드)
+인자로 게임명 전달 (예: python game_search.py "원신"): DEFAULT_TOPICS로 그 게임만 검색해 콘솔에 출력, DB 저장 안 함 (테스트 모드)
+
+run_all_games(trigger_source)가 실제 배치 실행의 진입점이며, 시작/종료를 run_log 테이블에 기록한다.
+admin_server.py(FastAPI)의 /run이 관리자 강제 실행 시 이 함수를 그대로 재사용한다 (trigger_source="manual").
+
+필요 환경변수 (.env):
+  TAVILY_API_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY
+"""
+
+import os
+import json
+import sys
+import time
+from datetime import date, timezone, datetime
+
+from dotenv import load_dotenv
+from tavily import TavilyClient
+from google import genai
+
+load_dotenv()
+
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+GEMINI_MODEL = "gemini-3.5-flash"
+
+# Supabase topics 테이블이 없거나 비어있을 때 쓰는 기본값 (CLI 테스트 모드 등)
+DEFAULT_TOPICS = [
+    {
+        "id": "version_update",
+        "label": "버전 업데이트 날짜",
+        "query_hint": "버전 업데이트 날짜",
+        "calendar_category": "update",
+    },
+    {
+        "id": "character_pickup",
+        "label": "캐릭터 픽업 기간",
+        "query_hint": "캐릭터 픽업 기간",
+        "calendar_category": "pickup",
+    },
+    {
+        "id": "broadcast_schedule",
+        "label": "공식방송 일정",
+        "query_hint": "공식방송 일정",
+        "calendar_category": "broadcast",
+    },
+]
+
+
+def get_supabase_client():
+    if not (SUPABASE_URL and SUPABASE_KEY):
+        raise RuntimeError("SUPABASE_URL / SUPABASE_KEY가 설정되지 않았습니다.")
+    from supabase import create_client
+
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def get_games(client):
+    """Supabase games 테이블에서 (id, name_en, name_ko, official_domains) 목록을 가져온다.
+    official_domains가 있으면 Tavily 검색을 그 도메인으로만 제한해 공식 정보만 가져온다."""
+    res = client.table("games").select("id,name_en,name_ko,official_domains").execute()
+    return res.data
+
+
+def get_topics(client):
+    """Supabase topics 테이블에서 검색 주제(+ 캘린더 카테고리) 목록을 가져온다.
+    이 테이블에 새 행을 추가하면 코드 수정 없이 검색 항목을 늘릴 수 있다."""
+    if client is None:
+        return DEFAULT_TOPICS
+    res = (
+        client.table("topics")
+        .select("id,label,query_hint,calendar_category")
+        .eq("active", True)
+        .order("sort_order")
+        .execute()
+    )
+    return res.data or DEFAULT_TOPICS
+
+
+def _valid_iso_date(value) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    try:
+        date.fromisoformat(value)
+        return True
+    except ValueError:
+        return False
+
+
+def save_events(client, game_id, game_name: str, topic: dict, events: list):
+    """이 (game_id, topic) 조합의 기존 '자동 검색' 이벤트만 지우고 새로 검색된 이벤트로 갈아끼운다.
+    (game_events는 매일 새로 계산되는 결과라 upsert보다 delete-then-insert가 단순하고 안전하다.)
+    source='manual'인 행(관리자 페이지에서 직접 추가한 일정)은 절대 건드리지 않는다."""
+    if game_id is None:
+        return  # CLI 테스트 모드(DB에 없는 게임)에서는 저장하지 않음
+
+    topic_id = topic["id"]
+    client.table("game_events").delete().eq("game_id", game_id).eq("topic_id", topic_id).eq(
+        "source", "search"
+    ).execute()
+
+    rows = [
+        {
+            "game_id": game_id,
+            "topic_id": topic_id,
+            "event_date": e.get("date"),
+            "title": e.get("title"),
+            "category": topic["calendar_category"],
+            "genre": game_name,
+            "note": e.get("note"),
+            "source_url": e.get("source_url"),
+            "verified": e.get("verified"),
+            "confidence": e.get("confidence"),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "source": "search",
+        }
+        for e in events
+        if e.get("title") and _valid_iso_date(e.get("date"))
+    ]
+    if rows:
+        client.table("game_events").insert(rows).execute()
+
+
+def search_topic(tavily: TavilyClient, game_name: str, topic_query: str, official_domains: list = None):
+    """Tavily로 특정 주제를 검색해 원본 결과(제목/URL/본문 일부)를 반환한다.
+    official_domains가 있으면 그 도메인(공식 홈페이지/공식 SNS 등)으로만 검색을 제한한다."""
+    query = f"{game_name} {topic_query} {date.today().year}"
+    search_kwargs = dict(
+        query=query,
+        search_depth="advanced",
+        max_results=5,
+        include_answer=True,
+    )
+    if official_domains:
+        search_kwargs["include_domains"] = official_domains
+    result = tavily.search(**search_kwargs)
+    return {
+        "query": query,
+        "answer": result.get("answer"),
+        "sources": [
+            {
+                "title": r.get("title"),
+                "url": r.get("url"),
+                "content": r.get("content"),
+            }
+            for r in result.get("results", [])
+        ],
+    }
+
+
+def collect_raw_results(tavily: TavilyClient, game_name: str, topics: list, official_domains: list = None):
+    """topics에 있는 모든 주제에 대한 Tavily 원본 검색 결과를 모은다."""
+    return {
+        t["id"]: search_topic(tavily, game_name, t["query_hint"], official_domains)
+        for t in topics
+    }
+
+
+def extract_with_gemini(client: genai.Client, game_name: str, topics: list, raw_results: dict):
+    """Gemini에게 원본 검색 결과를 주고, 캘린더에 바로 찍을 수 있는 날짜별 이벤트 목록을 추출시킨다.
+    한 주제 안에 날짜가 여러 개면(예: 버전별 업데이트, 픽업 전반/후반) 각각 별도 항목으로 나눈다."""
+    schema = {
+        t["id"]: [
+            {"date": "YYYY-MM-DD", "title": f"{t['label']} 관련 제목", "note": "짧은 설명", "source_url": "..."}
+        ]
+        for t in topics
+    }
+    prompt = f"""다음은 게임 "{game_name}"에 대한 웹 검색 결과다.
+각 주제별로 검색된 answer와 출처(sources)를 참고해서, 실제 달력에 표시할 수 있는 "날짜가 있는 개별 이벤트"를 모두 추출하라.
+
+규칙:
+- 한 주제 안에 날짜가 여러 개 있으면(예: 6.3/6.4/6.5 버전별 업데이트, 픽업 전반부/후반부) 각각을 별도 항목으로 나눠라.
+- date는 반드시 YYYY-MM-DD 형식. 연도가 검색 결과에 명시되지 않았으면 {date.today().year}년으로 가정하라.
+- 정보를 전혀 찾을 수 없는 주제는 빈 배열 []로 남겨라.
+- source_url은 반드시 sources 목록에 있는 url 중 하나여야 한다.
+- title은 "6.4 버전 업데이트", "바르카 픽업 시작" 처럼 짧고 구체적으로 써라.
+
+검색 결과:
+{json.dumps(raw_results, ensure_ascii=False, indent=2)}
+
+출력 형식 (JSON만 출력, 설명 문구 금지, 아래 키를 그대로 사용):
+{json.dumps(schema, ensure_ascii=False, indent=2)}"""
+
+    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    return _parse_json(response.text)
+
+
+def verify_with_gemini(client: genai.Client, game_name: str, topics: list, extracted: dict, raw_results: dict):
+    """1차로 추출된 이벤트 목록이 실제 출처 내용과 일치하는지 재검증하고, 검증 정보가 포함된 최종 목록을 만든다."""
+    schema = {
+        t["id"]: [
+            {
+                "date": "YYYY-MM-DD",
+                "title": "...",
+                "note": "...",
+                "source_url": "...",
+                "verified": "true/false",
+                "confidence": "high/medium/low",
+                "reason": "...",
+            }
+        ]
+        for t in topics
+    }
+    prompt = f"""너는 사실 검증가다. 게임 "{game_name}"에 대해 1차로 추출된 이벤트 목록(extracted)이
+원본 검색 결과(raw_results)의 실제 내용과 일치하는지 항목별로 검증하고, 검증 결과를 포함한 최종 목록을 만들어라.
+
+extracted:
+{json.dumps(extracted, ensure_ascii=False, indent=2)}
+
+raw_results:
+{json.dumps(raw_results, ensure_ascii=False, indent=2)}
+
+규칙:
+- extracted의 각 항목이 raw_results의 answer나 sources 본문에서 실제로 확인되면 verified=true.
+- 출처가 서로 다른 날짜를 말하거나 근거가 부족하면 verified=false, confidence="low"로 표시하되 항목은 삭제하지 말고 그대로 유지하라.
+- date/title/note/source_url은 extracted 값을 그대로 유지하거나, 원본에 더 정확한 정보가 있으면 고쳐써도 된다.
+- 정보가 없는 주제는 빈 배열로 남겨라.
+
+출력 형식 (JSON만 출력, 설명 문구 금지, 아래 키를 그대로 사용):
+{json.dumps(schema, ensure_ascii=False, indent=2)}"""
+
+    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    return _parse_json(response.text)
+
+
+def _parse_json(text: str):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+    return json.loads(text.strip())
+
+
+def run_for_game(
+    tavily: TavilyClient,
+    gemini_client: genai.Client,
+    game_name: str,
+    topics: list,
+    official_domains: list = None,
+):
+    """게임 하나에 대해 검색 → 추출 → 검증을 실행하고, {topic_id: [event, ...]} 형태로 반환한다."""
+    raw_results = collect_raw_results(tavily, game_name, topics, official_domains)
+    extracted = extract_with_gemini(gemini_client, game_name, topics, raw_results)
+    verified = verify_with_gemini(gemini_client, game_name, topics, extracted, raw_results)
+    return {t["id"]: verified.get(t["id"], []) for t in topics}
+
+
+def log(msg: str):
+    # cron 로그에서 시간 확인이 쉽도록 타임스탬프를 붙인다.
+    print(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}", flush=True)
+
+
+def _start_run_log(client, trigger_source: str) -> int:
+    res = client.table("run_log").insert(
+        {"trigger_source": trigger_source, "status": "running"}
+    ).execute()
+    return res.data[0]["id"]
+
+
+def _finish_run_log(client, run_id: int, status: str, games_processed: int, error_message: str = None):
+    client.table("run_log").update(
+        {
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "status": status,
+            "games_processed": games_processed,
+            "error_message": error_message,
+        }
+    ).eq("id", run_id).execute()
+
+
+def _is_run_already_in_progress(client) -> bool:
+    """run_log에 status='running'인 행이 남아있는지 확인한다.
+    크론(main())과 관리자 수동 실행(admin_server.py /run)은 서로 다른 프로세스라
+    파이썬 in-memory 잠금(threading.Lock)을 공유하지 못한다. run_log 테이블을
+    양쪽이 공통으로 확인하는 잠금처럼 써서, 한쪽이 실행 중이면 다른 쪽은 건너뛴다."""
+    res = client.table("run_log").select("id").eq("status", "running").limit(1).execute()
+    return bool(res.data)
+
+
+def run_all_games(trigger_source: str = "cron") -> dict:
+    """Supabase games 테이블 전체를 검색하고 결과를 저장한다.
+    크론(main())과 FastAPI(/run)가 공통으로 호출하는 진입점이며, run_log에 실행 이력을 남긴다."""
+    if not TAVILY_API_KEY:
+        raise RuntimeError("TAVILY_API_KEY가 설정되지 않았습니다.")
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY가 설정되지 않았습니다.")
+
+    supabase = get_supabase_client()
+
+    if _is_run_already_in_progress(supabase):
+        log(f"다른 실행이 이미 진행 중이라 건너뜁니다 (trigger={trigger_source}).")
+        return {"processed": 0, "total": 0, "errors": [], "skipped": True}
+
+    run_id = _start_run_log(supabase, trigger_source)
+
+    try:
+        tavily = TavilyClient(api_key=TAVILY_API_KEY)
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+        games = get_games(supabase)
+        topics = get_topics(supabase)
+        log(f"검색 주제 {len(topics)}개: {[t['id'] for t in topics]}")
+        log(f"{len(games)}개 게임 처리 시작 (trigger={trigger_source})")
+
+        processed = 0
+        errors = []
+        for i, game in enumerate(games):
+            game_name = game.get("name_ko") or game.get("name_en")
+            official_domains = game.get("official_domains") or None
+            try:
+                result = run_for_game(tavily, gemini_client, game_name, topics, official_domains)
+            except Exception as e:
+                log(f"[{game_name}] 실패: {e}")
+                errors.append(f"{game_name}: {e}")
+                continue
+
+            log(f"[{game_name}] 완료: {json.dumps(result, ensure_ascii=False)}")
+            for t in topics:
+                save_events(supabase, game.get("id"), game_name, t, result.get(t["id"], []))
+            processed += 1
+
+            # 1GB RAM 인스턴스 + API rate limit 보호를 위해 게임 사이 간격을 둔다.
+            if i < len(games) - 1:
+                time.sleep(5)
+
+        status = "failed" if processed == 0 and errors else "success"
+        _finish_run_log(
+            supabase, run_id, status=status, games_processed=processed,
+            error_message="; ".join(errors) if errors else None,
+        )
+        log(f"전체 처리 완료 (성공 {processed}/{len(games)})")
+        return {"processed": processed, "total": len(games), "errors": errors}
+
+    except Exception as e:
+        _finish_run_log(supabase, run_id, status="failed", games_processed=0, error_message=str(e))
+        raise
+
+
+def run_test_mode(game_name: str):
+    """CLI 테스트 모드: 게임 하나만 검색해 콘솔에 출력, DB/run_log에는 아무것도 남기지 않는다."""
+    if not TAVILY_API_KEY:
+        sys.exit("TAVILY_API_KEY가 설정되지 않았습니다. .env를 확인하세요.")
+    if not GEMINI_API_KEY:
+        sys.exit("GEMINI_API_KEY가 설정되지 않았습니다. .env를 확인하세요.")
+
+    tavily = TavilyClient(api_key=TAVILY_API_KEY)
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    topics = get_topics(None)
+    log(f"검색 주제 {len(topics)}개: {[t['id'] for t in topics]}")
+
+    result = run_for_game(tavily, gemini_client, game_name, topics, official_domains=None)
+    log(f"[{game_name}] 완료: {json.dumps(result, ensure_ascii=False)}")
+
+
+def main():
+    # CLI로 게임명을 직접 넘기면(테스트용) 그 게임만 검색하고 DB에는 저장하지 않는다.
+    # 인자가 없으면 Supabase games 테이블 전체를 조회해 결과를 저장한다 (cron 운영 모드).
+    if len(sys.argv) > 1:
+        run_test_mode(sys.argv[1])
+    else:
+        summary = run_all_games(trigger_source="cron")
+        log(f"요약: {summary}")
+
+
+if __name__ == "__main__":
+    main()

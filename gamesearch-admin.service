@@ -1,0 +1,18 @@
+[Unit]
+Description=gameSearch admin API (FastAPI, manual trigger + status)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/gameSearch
+EnvironmentFile=/home/ubuntu/gameSearch/.env
+ExecStart=/home/ubuntu/gameSearch/.venv/bin/uvicorn admin_server:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+# 1GB RAM 인스턴스 보호용 (필요시 조정)
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target
