@@ -31,6 +31,12 @@ update topics set calendar_category = 'update' where id = 'version_update' and c
 update topics set calendar_category = 'pickup' where id = 'character_pickup' and calendar_category is null;
 update topics set calendar_category = 'broadcast' where id = 'broadcast_schedule' and calendar_category is null;
 
+-- Tavily 사용량(크레딧) 절감용: 주제별로 검색 깊이를 다르게 준다.
+-- 'basic'이 'advanced'보다 크레딧을 덜 쓴다. 공식 홈페이지에 명확히 공지되는
+-- 버전 업데이트/픽업은 basic으로도 충분하고, 찾기 까다로운 공식방송 일정만 advanced를 유지한다.
+alter table topics add column if not exists search_depth text not null default 'basic';
+update topics set search_depth = 'advanced' where id = 'broadcast_schedule';
+
 -- 캘린더에 바로 꽂을 수 있는 개별 일정(이벤트) 테이블.
 -- gameInfo 프론트엔드의 ScheduleItem과 1:1로 대응한다: date/title/category/genre/note.
 -- 기존 game_schedule_info(주제당 텍스트 한 줄)를 대체한다 — 달력에는 실제 날짜 단위 이벤트가 필요하기 때문.

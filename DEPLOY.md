@@ -31,16 +31,18 @@ uv pip install -r requirements.txt
 
 `uv`는 pip보다 빌드 캐시/메모리를 덜 쓰기 때문에 1GB RAM에서 `google-genai`/`supabase` 같은 무거운 의존성을 설치할 때 스왑으로 인한 실패를 줄여준다.
 
-## 3. cron 등록 (3일에 한 번 자동 수집)
+## 3. cron 등록 (7일에 한 번 자동 수집)
+
+Tavily 사용량(크레딧) 절감을 위해 주기를 3일 → 7일로 늘렸다. 게임 업데이트/픽업 일정은 보통 몇 주 단위라 7일 주기로도 충분히 따라잡을 수 있다.
 
 ```bash
 crontab -e
 ```
 
-아래 줄 추가 (매 3일 04:00 KST 실행, 서버 타임존이 UTC라면 맞춰서 시간 조정):
+아래 줄 추가 (매주 04:00 KST 실행, 서버 타임존이 UTC라면 맞춰서 시간 조정):
 
 ```
-0 4 */3 * * cd /home/ubuntu/gameSearch && /home/ubuntu/gameSearch/.venv/bin/python game_search.py >> /home/ubuntu/gameSearch/cron.log 2>&1
+0 4 */7 * * cd /home/ubuntu/gameSearch && /home/ubuntu/gameSearch/.venv/bin/python game_search.py >> /home/ubuntu/gameSearch/cron.log 2>&1
 ```
 
 ## 4. admin_server.py를 systemd 서비스로 등록 (상시 실행)
