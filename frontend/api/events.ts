@@ -4,13 +4,18 @@
 // s-maxage로 하루 동안 Vercel Edge 캐시에 태워 보낸다 — 방문자가 몰려도
 // Supabase 무료 티어의 API 호출/egress를 프론트 트래픽만큼 그대로 소모하지 않게 하기 위함.
 //
-// 오늘 이전 데이터는 반환하지 않는다 (지난 일정을 굳이 캐시/전송할 필요가 없어서).
+// 수집(game_search.py)은 그대로 두고, 화면에 내려주는 범위만 "이번 달 기준 앞뒤 한 달"로 제한한다.
+// 즉 지난달 1일 ~ 다음달 말일 사이의 일정만 반환한다 (너무 오래된 과거/너무 먼 미래는 굳이 안 보내도 됨).
 //
 // 필요 환경변수 (Vercel 프로젝트 설정에 등록, VITE_ 접두어 없이 — 서버 전용):
 //   SUPABASE_URL, SUPABASE_ANON_KEY (anon/publishable 키. service key는 여기 쓰지 않는다)
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
+
+function toIsoDate(date: Date): string {
+  return date.toISOString().slice(0, 10)
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
@@ -27,12 +32,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const supabase = createClient(supabaseUrl, supabaseAnonKey)
-  const today = new Date().toISOString().slice(0, 10) // UTC 기준 YYYY-MM-DD, "오늘부터만" 필터
+
+  // UTC 기준 오늘이 속한 달의 1일에서, 전월 1일 / 익월 말일을 계산한다.
+  const now = new Date()
+  const rangeStart = toIsoDate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)))
+  const rangeEnd = toIsoDate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 0)))
 
   const { data, error } = await supabase
     .from('game_events')
     .select('id, event_date, title, category, genre, note, source_url, verified, confidence')
-    .gte('event_date', today)
+    .gte('event_date', rangeStart)
+    .lte('event_date', rangeEnd)
     .order('event_date', { ascending: true })
 
   if (error) {
