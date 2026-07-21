@@ -1,0 +1,16 @@
+# 이 리포는 오라클 VM용 백엔드(파이썬)와 Vercel용 frontend/가 한 레포에 같이 있다.
+# Vercel 프로젝트의 Root Directory를 frontend로 설정하는 게 정석이지만,
+# 혹시라도 레포 루트를 기준으로 배포될 때 Vercel의 파이썬 런타임이 game_search.py/admin_server.py/main.py를
+# 서버리스 함수로 잘못 인식해서 "does not define a top-level app" 에러가 나는 걸 막기 위한 안전장치.
+main.py
+game_search.py
+admin_server.py
+schema.sql
+seed_official_domains.sql
+gamesearch-admin.service
+DEPLOY.md
+pyproject.toml
+uv.lock
+requirements.txt
+.venv/
+.python-version
