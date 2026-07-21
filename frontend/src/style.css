@@ -163,6 +163,21 @@ a {
   background: #14152a;
 }
 
+.legend-count {
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.legend-chip.active .legend-count {
+  background: rgba(20, 21, 42, 0.18);
+  color: #14152a;
+}
+
 .sidebar-card {
   padding: 18px;
   border-radius: 18px;

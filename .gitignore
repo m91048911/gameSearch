@@ -15,6 +15,9 @@ wheels/
 frontend/.env
 frontend/.env.local
 
+# SSH 개인키 (오라클 VM 접속용 — 절대 커밋하지 말 것)
+*.key
+
 # 프론트엔드
 frontend/node_modules/
 frontend/dist/

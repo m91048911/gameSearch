@@ -22,6 +22,11 @@ type CalendarDay = {
 
 type LoadStatus = 'loading' | 'ready' | 'error'
 
+type GameOption = {
+  id: number
+  name: string
+}
+
 // ---- 상수 -------------------------------------------------------------
 
 const weekdayLabels = ['일', '월', '화', '수', '목', '금', '토']
@@ -112,6 +117,7 @@ function App() {
   const [items, setItems] = useState<ScheduleItem[]>([])
   const [status, setStatus] = useState<LoadStatus>('loading')
   const [errorMessage, setErrorMessage] = useState('')
+  const [allGames, setAllGames] = useState<GameOption[]>([])
 
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [selectedGame, setSelectedGame] = useState<string | null>(null)
@@ -146,6 +152,26 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    const loadGames = async () => {
+      try {
+        const response = await fetch('/api/games')
+        if (!response.ok) return
+        const { games } = (await response.json()) as { games: GameOption[] }
+        if (!cancelled) setAllGames(games)
+      } catch {
+        // 게임 목록은 부가 정보라 실패해도 달력 자체는 계속 동작해야 하니 조용히 무시한다.
+      }
+    }
+
+    loadGames()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const categories = useMemo(() => {
     const found = new Set(items.map((item) => item.category))
     const ordered = CATEGORY_ORDER.filter((key) => found.has(key))
@@ -155,10 +181,32 @@ function App() {
     return ['all', ...ordered, ...rest]
   }, [items])
 
+  const year = viewDate.getFullYear()
+  const month = viewDate.getMonth()
+
+  // 이벤트가 하나도 없는 게임도 계속 목록에 보이도록, game_events가 아니라 games 테이블(/api/games)
+  // 에서 가져온 전체 목록을 기준으로 삼는다. 아직 로딩 전이거나 실패했을 때는 지금까지 불러온
+  // 이벤트에 등장하는 게임 이름만이라도 보여준다 (완전히 빈 화면보다는 낫다).
   const games = useMemo(() => {
+    if (allGames.length > 0) {
+      return allGames.map((g) => g.name)
+    }
     const found = new Set(items.map((item) => item.game))
     return Array.from(found).sort((a, b) => a.localeCompare(b, 'ko'))
-  }, [items])
+  }, [allGames, items])
+
+  // 지금 보고 있는 달 + 선택된 카테고리 기준으로, 게임별 이벤트 개수를 세서 legend 배지에 쓴다.
+  // (게임 필터 자체는 여기 반영하지 않는다 — 그래야 다른 게임을 눌러도 내 게임의 배지 숫자가 안 바뀐다.)
+  const gameCountsInView = useMemo(() => {
+    const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}`
+    const counts: Record<string, number> = {}
+    for (const item of items) {
+      if (selectedCategory !== 'all' && item.category !== selectedCategory) continue
+      if (!item.date.startsWith(monthPrefix)) continue
+      counts[item.game] = (counts[item.game] ?? 0) + 1
+    }
+    return counts
+  }, [items, selectedCategory, year, month])
 
   const visibleItems = useMemo(() => {
     return items
@@ -175,8 +223,6 @@ function App() {
     return map
   }, [visibleItems])
 
-  const year = viewDate.getFullYear()
-  const month = viewDate.getMonth()
   const calendarDays = useMemo(() => buildCalendarDays(year, month), [year, month])
   const monthTitle = `${year}년 ${month + 1}월`
 
@@ -233,18 +279,22 @@ function App() {
             <div className="game-legend" aria-label="게임별 필터">
               <p className="legend-title">게임별 보기</p>
               <div className="legend-chips">
-                {games.map((game) => (
-                  <button
-                    key={game}
-                    type="button"
-                    className={game === selectedGame ? 'legend-chip active' : 'legend-chip'}
-                    style={{ '--chip-color': colorForGame(game) } as CSSProperties}
-                    onClick={() => setSelectedGame((cur) => (cur === game ? null : game))}
-                  >
-                    <span className="legend-dot" />
-                    {game}
-                  </button>
-                ))}
+                {games.map((game) => {
+                  const count = gameCountsInView[game] ?? 0
+                  return (
+                    <button
+                      key={game}
+                      type="button"
+                      className={game === selectedGame ? 'legend-chip active' : 'legend-chip'}
+                      style={{ '--chip-color': colorForGame(game) } as CSSProperties}
+                      onClick={() => setSelectedGame((cur) => (cur === game ? null : game))}
+                    >
+                      <span className="legend-dot" />
+                      {game}
+                      {count > 0 && <span className="legend-count">{count}</span>}
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}

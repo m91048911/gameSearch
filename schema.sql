@@ -18,6 +18,8 @@ create table if not exists topics (
   active             boolean not null default true
 );
 
+alter table topics add column if not exists calendar_category text;
+
 insert into topics (id, label, query_hint, calendar_category, sort_order) values
   ('version_update', '버전 업데이트 날짜', '버전 업데이트 날짜', 'update', 1),
   ('character_pickup', '캐릭터 픽업 기간', '캐릭터 픽업 기간', 'pickup', 2),
@@ -25,7 +27,6 @@ insert into topics (id, label, query_hint, calendar_category, sort_order) values
 on conflict (id) do nothing;
 
 -- 기존에 topics 테이블을 이미 만들어뒀다면 calendar_category 컬럼만 추가/채우기
-alter table topics add column if not exists calendar_category text;
 update topics set calendar_category = 'update' where id = 'version_update' and calendar_category is null;
 update topics set calendar_category = 'pickup' where id = 'character_pickup' and calendar_category is null;
 update topics set calendar_category = 'broadcast' where id = 'broadcast_schedule' and calendar_category is null;
