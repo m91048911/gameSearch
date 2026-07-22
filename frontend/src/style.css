@@ -127,14 +127,15 @@ a {
 
 .legend-chips {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
 }
 
 .legend-chip {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   padding: 6px 12px 6px 8px;
   border-radius: 999px;
   border: 1px solid rgba(148, 163, 184, 0.25);
@@ -164,6 +165,7 @@ a {
 }
 
 .legend-count {
+  margin-left: auto;
   min-width: 18px;
   padding: 1px 6px;
   border-radius: 999px;
