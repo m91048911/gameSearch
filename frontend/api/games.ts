@@ -39,6 +39,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
+  // 화면 표시용 이름은 한국어 이름을 우선하고, 없으면 영문명, 그마저 없으면 id로 대체한다.
   const games = (data ?? []).map((row) => ({
     id: row.id as number,
     name: (row.name_ko ?? row.name_en ?? `#${row.id}`) as string,

@@ -49,26 +49,32 @@ function formatDateTime(value: string | null): string {
 }
 
 function AdminApp() {
+  // 로그인 세션. null이면 로그인 폼을, 있으면 관리자 대시보드를 보여준다 (아래 return 문에서 분기).
   const [session, setSession] = useState<Session | null>(null)
-  const [authLoading, setAuthLoading] = useState(true)
+  const [authLoading, setAuthLoading] = useState(true) // 최초 세션 확인이 끝나기 전까지 깜빡임 방지용
 
+  // 로그인 폼 상태
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loginError, setLoginError] = useState('')
   const [loggingIn, setLoggingIn] = useState(false)
 
+  // "실행 이력" 패널 상태 (run_log 조회 결과)
   const [runs, setRuns] = useState<RunLogRow[]>([])
   const [runsError, setRunsError] = useState('')
   const [runsLoading, setRunsLoading] = useState(false)
 
+  // "강제 업데이트" 버튼 상태
   const [triggering, setTriggering] = useState(false)
   const [triggerMessage, setTriggerMessage] = useState('')
 
+  // "일정 직접 추가" 패널 상태: 게임 드롭다운 목록 + 지금까지 수동으로 추가한 일정(source='manual') 목록
   const [games, setGames] = useState<GameOption[]>([])
   const [manualEvents, setManualEvents] = useState<ManualEventRow[]>([])
   const [manualEventsError, setManualEventsError] = useState('')
   const [manualEventsLoading, setManualEventsLoading] = useState(false)
 
+  // "일정 직접 추가" 폼 입력값들
   const [formGameId, setFormGameId] = useState('')
   const [formCategory, setFormCategory] = useState(CATEGORY_OPTIONS[0].value)
   const [formDate, setFormDate] = useState('')
@@ -78,6 +84,8 @@ function AdminApp() {
   const [adding, setAdding] = useState(false)
   const [addMessage, setAddMessage] = useState('')
 
+  // 최초 마운트 시 기존 로그인 세션이 있는지 확인하고, 이후 로그인/로그아웃/토큰 갱신 등
+  // 인증 상태가 바뀔 때마다 session을 갱신한다. onAuthStateChange 구독은 언마운트 시 해제한다.
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
@@ -91,6 +99,8 @@ function AdminApp() {
     return () => subscription.subscription.unsubscribe()
   }, [])
 
+  // run_log 최근 30건 조회. RLS 정책상 로그인한 사용자의 이메일이 관리자 본인일 때만 읽힌다
+  // (schema.sql의 "admin can read run_log" 정책 참고) — 여기 실패하면 대개 다른 이메일로 로그인한 경우다.
   const loadRuns = async () => {
     setRunsLoading(true)
     setRunsError('')
@@ -109,6 +119,8 @@ function AdminApp() {
     setRunsLoading(false)
   }
 
+  // "일정 직접 추가" 폼의 게임 드롭다운용. 공개 캘린더(App.tsx)와 달리 여기는 로그인 세션으로
+  // 직접 games 테이블을 조회한다(관리자 전용 화면이라 /api/games 캐시를 거칠 필요가 없음).
   const loadGames = async () => {
     const { data, error } = await supabase.from('games').select('id, name_ko, name_en').order('id')
     if (!error) {
@@ -118,6 +130,8 @@ function AdminApp() {
     }
   }
 
+  // source='manual'인 행만 조회한다 — 자동 검색(source='search')이 채운 일정과 구분해서
+  // "직접 추가한 일정" 목록에는 관리자가 손으로 넣은 것만 보이게 한다.
   const loadManualEvents = async () => {
     setManualEventsLoading(true)
     setManualEventsError('')
@@ -136,6 +150,7 @@ function AdminApp() {
     setManualEventsLoading(false)
   }
 
+  // 로그인이 완료된 시점(session이 채워진 순간)에 대시보드에 필요한 데이터 3종을 한꺼번에 불러온다.
   useEffect(() => {
     if (session) {
       loadRuns()
@@ -144,6 +159,8 @@ function AdminApp() {
     }
   }, [session])
 
+  // "일정 직접 추가" 폼 제출. verified=true/confidence='high'로 고정해서 저장하는데, 관리자가
+  // 직접 확인하고 넣는 정보라 자동 검색 결과처럼 별도 검증이 필요 없기 때문이다.
   const handleAddEvent = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setAddMessage('')
@@ -183,6 +200,8 @@ function AdminApp() {
     setAdding(false)
   }
 
+  // 서버 응답을 다시 조회하지 않고 로컬 상태에서 바로 제거한다 — 삭제 직후 목록이
+  // 지연 없이 갱신되는 것처럼 보이게 하기 위함 (낙관적 업데이트에 가까운 처리).
   const handleDeleteManualEvent = async (id: number) => {
     const { error } = await supabase.from('game_events').delete().eq('id', id)
     if (error) {
@@ -205,6 +224,11 @@ function AdminApp() {
     await supabase.auth.signOut()
   }
 
+  // "지금 검색 실행" 버튼 핸들러. 이 프론트는 오라클 VM을 직접 부르지 않고, 매번 최신 access_token을
+  // 다시 받아서(만료 대비) /api/admin/trigger-run(Vercel 서버리스 함수)에 실어 보낸다. 그 함수가
+  // 토큰 검증 → ADMIN_EMAILS 확인 → Tailscale Funnel로 오라클 VM 호출까지 대신 처리한다.
+  // 실행은 백그라운드로 도니, 여기서는 "시작됐다"는 메시지만 보여주고 2초 후 실행 이력을 새로고침한다
+  // (실제 완료까지는 몇 분 더 걸릴 수 있어, 그 사이엔 수동으로 "새로고침" 버튼을 눌러야 한다).
   const handleTrigger = async () => {
     setTriggering(true)
     setTriggerMessage('')
@@ -242,6 +266,8 @@ function AdminApp() {
     )
   }
 
+  // 로그인 안 된 상태: 이메일/비밀번호 폼만 보여준다. 회원가입 화면은 없음 —
+  // 관리자 계정은 Supabase 대시보드(Authentication > Users)에서 미리 만들어둔다.
   if (!session) {
     return (
       <div className="admin-shell">
@@ -290,6 +316,7 @@ function AdminApp() {
         </button>
       </header>
 
+      {/* 패널 1: 강제 업데이트 (수동 트리거) */}
       <section className="admin-panel">
         <div className="admin-panel-header">
           <h3>강제 업데이트</h3>
@@ -300,6 +327,7 @@ function AdminApp() {
         {triggerMessage && <p className="status-message">{triggerMessage}</p>}
       </section>
 
+      {/* 패널 2: 일정 직접 추가 — 자동 검색이 놓친 일정을 수동 등록 + 지금까지 추가한 목록/삭제 */}
       <section className="admin-panel">
         <div className="admin-panel-header">
           <h3>일정 직접 추가</h3>
@@ -406,6 +434,7 @@ function AdminApp() {
         )}
       </section>
 
+      {/* 패널 3: 실행 이력 — run_log 최근 30건 (성공/실패, 트리거 종류, 처리된 게임 수, 에러 메시지) */}
       <section className="admin-panel">
         <div className="admin-panel-header">
           <h3>실행 이력</h3>

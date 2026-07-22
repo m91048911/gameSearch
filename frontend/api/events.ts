@@ -13,6 +13,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { createClient } from '@supabase/supabase-js'
 
+// Date -> 'YYYY-MM-DD' (UTC 기준). Supabase의 date 컬럼(event_date)과 문자열로 비교하기 위함.
 function toIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10)
 }

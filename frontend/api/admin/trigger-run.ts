@@ -63,6 +63,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    // TAILSCALE_FUNNEL_URL 끝에 실수로 슬래시(/)가 붙어 있어도 "//run"이 되지 않도록 정리한다.
     const response = await fetch(`${funnelUrl.replace(/\/+$/, '')}/run`, {
       method: 'POST',
       headers: { 'X-Admin-Secret': adminApiSecret },

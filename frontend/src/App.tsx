@@ -3,6 +3,8 @@ import type { GameEventRow } from './supabaseClient'
 
 // ---- 타입 정의 -------------------------------------------------------
 
+// game_events 한 행(GameEventRow)을 화면에서 다루기 편한 형태로 매핑한 것.
+// DB 컬럼명을 그대로 쓰지 않고 camelCase로 바꾸는 것도 겸한다 (sourceUrl 등).
 type ScheduleItem = {
   id: string
   date: string // 'YYYY-MM-DD'
@@ -15,13 +17,17 @@ type ScheduleItem = {
   confidence: string | null
 }
 
+// 달력의 칸 하나. inCurrentMonth=false면 지난달/다음달에서 넘어온, 흐리게 표시되는 채움용 날짜다.
 type CalendarDay = {
   date: Date
   inCurrentMonth: boolean
 }
 
+// /api/events 호출 상태. 화면 상단에 로딩 스피너 대신 상태 메시지를 보여주는 데 쓰인다.
 type LoadStatus = 'loading' | 'ready' | 'error'
 
+// /api/games가 돌려주는 게임 하나. games 테이블의 id + 표시용 이름(name_ko 우선)만 필요해서
+// 이 정도로 단순화했다.
 type GameOption = {
   id: number
   name: string
@@ -112,17 +118,25 @@ export function mapRow(row: GameEventRow): ScheduleItem {
 // ---- 메인 컴포넌트 ------------------------------------------------------
 
 function App() {
-  const today = new Date()
-  const [viewDate, setViewDate] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1))
-  const [items, setItems] = useState<ScheduleItem[]>([])
-  const [status, setStatus] = useState<LoadStatus>('loading')
-  const [errorMessage, setErrorMessage] = useState('')
-  const [allGames, setAllGames] = useState<GameOption[]>([])
+  const today = new Date() // "오늘" 배지, 기본 표시 월, "다음 일정" 계산의 기준점으로 계속 재사용된다.
 
+  // 지금 화면에 보여주는 달(월 이동 버튼으로 바뀜). 항상 그 달의 1일로 고정해두면
+  // buildCalendarDays(year, month) 계산이 단순해진다.
+  const [viewDate, setViewDate] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1))
+  const [items, setItems] = useState<ScheduleItem[]>([]) // /api/events에서 받아온 전체 일정 (필터링 전)
+  const [status, setStatus] = useState<LoadStatus>('loading') // /api/events 로딩 상태 (달력 위 안내 메시지용)
+  const [errorMessage, setErrorMessage] = useState('')
+  const [allGames, setAllGames] = useState<GameOption[]>([]) // /api/games에서 받아온 "수집 대상 게임 전체" 목록
+
+  // 사이드바 필터 상태 3종. selectedCategory='all'이 기본(필터링 없음)이고,
+  // selectedGame=null도 마찬가지로 "게임 필터 없음"을 의미한다.
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [selectedGame, setSelectedGame] = useState<string | null>(null)
-  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [selectedDate, setSelectedDate] = useState<string | null>(null) // 날짜 칸 클릭 시 열리는 상세 모달의 대상 날짜
 
+  // 일정 데이터 로딩. 마운트 시 한 번만 호출한다(뒤로가기/새로고침 없이는 서버 재조회 안 함).
+  // cancelled 플래그로, 컴포넌트가 언마운트된 뒤에 응답이 늦게 와도 setState를 안 하게 막는다
+  // (React의 "unmounted component에 state 업데이트" 경고 방지).
   useEffect(() => {
     let cancelled = false
 
@@ -152,6 +166,9 @@ function App() {
     }
   }, [])
 
+  // 게임 목록은 별도의 병렬 요청으로 가져온다. /api/events와 굳이 하나로 합치지 않은 이유는,
+  // 이벤트가 하나도 없는 게임도 "게임별 보기"에는 계속 나와야 해서 games 테이블을 직접 조회하는
+  // 별개의 엔드포인트(/api/games)가 필요했기 때문이다.
   useEffect(() => {
     let cancelled = false
 
@@ -172,6 +189,8 @@ function App() {
     }
   }, [])
 
+  // 사이드바 카테고리 목록. 실제 데이터에 등장하는 카테고리만 보여주고(빈 카테고리는 안 보임),
+  // 'all'을 맨 앞에 고정한 뒤 CATEGORY_ORDER 순서대로, 목록에 없는 새 카테고리는 뒤에 알파벳순으로 붙인다.
   const categories = useMemo(() => {
     const found = new Set(items.map((item) => item.category))
     const ordered = CATEGORY_ORDER.filter((key) => found.has(key))
@@ -208,12 +227,14 @@ function App() {
     return counts
   }, [items, selectedCategory, year, month])
 
+  // 카테고리 + 게임 필터를 둘 다 적용한 최종 목록. 달력에 실제로 그려지는 건 전부 이 값 기준이다.
   const visibleItems = useMemo(() => {
     return items
       .filter((item) => selectedCategory === 'all' || item.category === selectedCategory)
       .filter((item) => !selectedGame || item.game === selectedGame)
   }, [items, selectedCategory, selectedGame])
 
+  // 날짜별로 묶어둬야 달력 칸을 그릴 때마다 매번 배열 전체를 훑지 않고 O(1)로 조회할 수 있다.
   const eventsByDate = useMemo(() => {
     const map: Record<string, ScheduleItem[]> = {}
     for (const item of visibleItems) {
@@ -229,12 +250,16 @@ function App() {
   const selectedEvents = selectedDate ? (eventsByDate[selectedDate] ?? []) : []
   const selectedDateLabel = selectedDate ? selectedDate.replaceAll('-', '.') : ''
 
+  // 상세 모달이 열려있는 상태에서 필터를 바꿔서 그 날짜에 더 이상 보여줄 일정이 없어지면,
+  // 빈 모달이 뜬 채로 남지 않도록 자동으로 닫는다.
   useEffect(() => {
     if (selectedDate && selectedEvents.length === 0) {
       setSelectedDate(null)
     }
   }, [selectedDate, selectedEvents.length])
 
+  // Esc 키로 상세 모달을 닫을 수 있게 하는 전역 키보드 리스너. 모달이 열려있을 때만 동작해도 되지만,
+  // selectedDate가 null이면 setSelectedDate(null)이 아무 효과가 없으니 조건 분기 없이 그냥 둬도 안전하다.
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setSelectedDate(null)
@@ -243,20 +268,24 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
+  // 월 이동 버튼 3개. viewDate는 항상 "그 달의 1일"로 유지해서 buildCalendarDays 계산이 어긋나지 않게 한다.
   const goPrevMonth = () => setViewDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))
   const goNextMonth = () => setViewDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))
   const goToday = () => setViewDate(new Date(today.getFullYear(), today.getMonth(), 1))
 
+  // 상단 "다음 일정" 카드에 쓸 값. 오늘 이후(오늘 포함) 일정 중 가장 가까운 것 하나만 뽑는다.
   const upcoming = [...visibleItems]
     .filter((item) => item.date >= formatIsoDate(today.getFullYear(), today.getMonth(), today.getDate()))
     .sort((a, b) => a.date.localeCompare(b.date))[0]
 
   return (
     <div className="layout-shell">
+      {/* 왼쪽 사이드바: 카테고리 필터 + 게임별 필터 + 현재 필터 요약 카드 */}
       <aside className="sidebar">
         <div className="sidebar-top">
           <p className="eyebrow">Game Schedule</p>
 
+          {/* 카테고리 필터 버튼들. 'all'은 필터 없음을 의미하고 항상 맨 앞에 고정된다. */}
           <nav className="menu-list" aria-label="카테고리 필터">
             {categories.map((key) => (
               <button
@@ -275,6 +304,8 @@ function App() {
             ))}
           </nav>
 
+          {/* 게임별 필터. 클릭하면 토글(같은 게임 다시 클릭 시 필터 해제)되고, 배지 숫자는
+              gameCountsInView(이번 달 + 현재 카테고리 기준 개수)를 그대로 쓴다. */}
           {games.length > 0 && (
             <div className="game-legend" aria-label="게임별 필터">
               <p className="legend-title">게임별 보기</p>
@@ -311,6 +342,7 @@ function App() {
       </aside>
 
       <main className="content">
+        {/* 상단 요약 배너: 이번 달 타이틀 + 전체/게임 수/다음 일정 통계 3종 */}
         <section className="hero-panel">
           <div>
             <p className="eyebrow">Monthly Overview</p>
@@ -337,6 +369,7 @@ function App() {
           </div>
         </section>
 
+        {/* 월간 캘린더 본체. 항상 6주(42칸)를 그려서 달마다 레이아웃 높이가 흔들리지 않게 한다. */}
         <section className="calendar-panel">
           <div className="calendar-header">
             <div>
@@ -429,6 +462,8 @@ function App() {
         </section>
       </main>
 
+      {/* 날짜 칸 클릭 시 뜨는 상세 모달. 배경 클릭/Esc로 닫히고, 모달 내부 클릭은
+          stopPropagation으로 배경 클릭 핸들러까지 안 번지게 막는다. */}
       {selectedEvents.length > 0 ? (
         <div className="modal-backdrop" onClick={() => setSelectedDate(null)} role="presentation">
           <section
