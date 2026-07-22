@@ -163,6 +163,75 @@ def test_retry_exhausts_after_max_retries(monkeypatch):
     assert fake_client.models.generate_content.call_count == 3
 
 
+# ---- 429 RESOURCE_EXHAUSTED(쿼터 소진) 전용 처리 ---------------------------
+# 실제 운영 중 마주친 에러: 무료 티어 하루 20건 제한. 이건 503과 달리 "몇 번이고 재시도"하면
+# 오히려 얼마 안 남은 쿼터를 더 깎아먹으므로, 딱 한 번만 재시도하고 안 되면 바로 포기해야 한다.
+
+
+def test_extract_retry_delay_seconds_parses_google_error_format():
+    message = (
+        "429 RESOURCE_EXHAUSTED. {'error': {..., 'details': [..., "
+        "{'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '57s'}]}}"
+    )
+    assert gs._extract_retry_delay_seconds(message) == 57.0
+
+
+def test_extract_retry_delay_seconds_returns_none_when_absent():
+    assert gs._extract_retry_delay_seconds("아무 관련 없는 에러 메시지") is None
+
+
+def test_quota_exhausted_retries_exactly_once_then_succeeds(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    call_count = {"n": 0}
+
+    def flaky(model, contents):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("429 RESOURCE_EXHAUSTED ... 'retryDelay': '10s' ...")
+        return _FakeResponse('{"ok": true}')
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = flaky
+
+    response = gs._generate_content_with_retry(fake_client, "아무 프롬프트")
+
+    assert response.text == '{"ok": true}'
+    assert call_count["n"] == 2  # 최초 시도 + 재시도 1번
+
+
+def test_quota_exhausted_gives_up_after_one_retry(monkeypatch):
+    """쿼터 소진이 재시도 후에도 계속되면, 503처럼 여러 번 더 시도하지 않고 딱 2번(최초+1회)만에 포기해야 한다."""
+    sleep_calls = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = RuntimeError(
+        "429 RESOURCE_EXHAUSTED ... 'retryDelay': '5s' ..."
+    )
+
+    with pytest.raises(RuntimeError, match="RESOURCE_EXHAUSTED"):
+        gs._generate_content_with_retry(fake_client, "아무 프롬프트")
+
+    assert fake_client.models.generate_content.call_count == 2
+    assert sleep_calls == [5.0]  # 딱 한 번, Google이 알려준 시간만큼만 기다림
+
+
+def test_quota_exhausted_delay_is_capped_at_60_seconds(monkeypatch):
+    sleep_calls = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = RuntimeError(
+        "429 RESOURCE_EXHAUSTED ... 'retryDelay': '300s' ..."  # 비정상적으로 긴 값이 와도
+    )
+
+    with pytest.raises(RuntimeError):
+        gs._generate_content_with_retry(fake_client, "아무 프롬프트")
+
+    assert sleep_calls == [60]  # 최대 60초까지만 기다린다
+
+
 # ---- get_confirmed_future_topic_ids ---------------------------------------
 
 
