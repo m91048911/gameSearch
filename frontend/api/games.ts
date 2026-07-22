@@ -32,7 +32,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     .order('id')
 
   if (error) {
-    res.status(500).json({ error: error.message })
+    // Supabase 원본 에러 메시지에는 컬럼/제약조건명 등 내부 스키마 정보가 섞여 나올 수 있다.
+    // 인증 없는 공개 엔드포인트라 그대로 돌려주지 않고, 서버 로그(Vercel Function Logs)에만 남긴다.
+    console.error('[api/games] Supabase 조회 실패:', error)
+    res.status(500).json({ error: '데이터를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.' })
     return
   }
 

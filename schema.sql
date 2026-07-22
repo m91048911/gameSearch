@@ -4,6 +4,23 @@
 
 alter table games add column if not exists official_domains text[];
 
+-- games는 RLS만 켜져 있고 정책이 없으면 anon key로는 아무것도 못 읽는다(기본 거부).
+-- 공개 캘린더(/api/games, anon key)와 관리자 페이지(로그인 세션)는 계속 읽을 수 있어야 하고,
+-- 쓰기(추가/수정/삭제)는 관리자 본인 로그인 세션에서만 가능해야 한다.
+-- 크론/game_search.py는 SUPABASE_KEY(서비스 롤)로 쓰기 때문에 아래 RLS와 무관하게 항상 동작한다.
+alter table games enable row level security;
+
+drop policy if exists "public can read games" on games;
+create policy "public can read games"
+  on games for select
+  using (true);
+
+drop policy if exists "admin can manage games" on games;
+create policy "admin can manage games"
+  on games for all
+  using (auth.jwt() ->> 'email' = 'm91048911@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'm91048911@gmail.com');
+
 -- Supabase: 검색 주제 정의 테이블
 -- 새 검색 항목을 늘리고 싶으면 코드 수정 없이 이 테이블에 행만 추가하면 된다.
 -- calendar_category: 프론트엔드 캘린더(gameInfo 레포)의 MenuKey('launch' | 'update' | 'broadcast' | 'pickup' 등)와 매핑되는 값.
@@ -17,6 +34,22 @@ create table if not exists topics (
   sort_order         int not null default 0,
   active             boolean not null default true
 );
+
+-- games와 마찬가지로, RLS만 켜져 있고 정책이 없으면 anon key로 아무것도 못 읽는다(기본 거부).
+-- 지금 프론트엔드는 topics를 직접 읽지는 않지만, 나중에 필요해질 수 있고 games와 일관성을 맞추기 위해
+-- 동일한 패턴(공개 읽기 + 관리자 전용 쓰기)을 적용해둔다.
+alter table topics enable row level security;
+
+drop policy if exists "public can read topics" on topics;
+create policy "public can read topics"
+  on topics for select
+  using (true);
+
+drop policy if exists "admin can manage topics" on topics;
+create policy "admin can manage topics"
+  on topics for all
+  using (auth.jwt() ->> 'email' = 'm91048911@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'm91048911@gmail.com');
 
 alter table topics add column if not exists calendar_category text;
 
@@ -77,8 +110,8 @@ create policy "public can read game_events"
 drop policy if exists "admin can manage game_events" on game_events;
 create policy "admin can manage game_events"
   on game_events for all
-  using (auth.jwt() ->> 'email' = 'jhb2104@officehub.kr')
-  with check (auth.jwt() ->> 'email' = 'jhb2104@officehub.kr');
+  using (auth.jwt() ->> 'email' = 'm91048911@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'm91048911@gmail.com');
 
 -- 실행 이력 테이블. game_search.py(크론)와 FastAPI(/run, 수동 트리거)가 모두 여기에 기록한다.
 -- 쓰기는 오라클 VM에서 SUPABASE_KEY(서비스 롤)로만 하므로 RLS를 우회한다.
@@ -99,4 +132,4 @@ alter table run_log enable row level security;
 drop policy if exists "admin can read run_log" on run_log;
 create policy "admin can read run_log"
   on run_log for select
-  using (auth.jwt() ->> 'email' = 'jhb2104@officehub.kr');
+  using (auth.jwt() ->> 'email' = 'm91048911@gmail.com');
