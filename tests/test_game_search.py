@@ -163,6 +163,36 @@ def test_retry_exhausts_after_max_retries(monkeypatch):
     assert fake_client.models.generate_content.call_count == 3
 
 
+# ---- Gemini 호출 횟수 카운팅 (관리자 페이지 사용량 표시용) ------------------
+# 구글이 API 키로 조회 가능한 공식 사용량 엔드포인트를 제공하지 않아서, 우리가 직접 센다.
+# 재시도도 실제로는 API를 한 번 더 호출하는 것이므로 카운트에 포함되어야 한다.
+
+
+def test_gemini_call_count_counts_every_actual_attempt_including_retries(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    gs.reset_gemini_call_count()
+
+    call_count = {"n": 0}
+
+    def flaky(model, contents):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise RuntimeError("503 UNAVAILABLE")
+        return _FakeResponse('{"ok": true}')
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = flaky
+
+    gs._generate_content_with_retry(fake_client, "아무 프롬프트")
+
+    assert gs.get_gemini_call_count() == 3  # 실패 2번 + 성공 1번, 전부 실제 API 호출
+
+
+def test_reset_gemini_call_count_zeroes_out():
+    gs.reset_gemini_call_count()
+    assert gs.get_gemini_call_count() == 0
+
+
 # ---- 429 RESOURCE_EXHAUSTED(쿼터 소진) 전용 처리 ---------------------------
 # 실제 운영 중 마주친 에러: 무료 티어 하루 20건 제한. 이건 503과 달리 "몇 번이고 재시도"하면
 # 오히려 얼마 안 남은 쿼터를 더 깎아먹으므로, 딱 한 번만 재시도하고 안 되면 바로 포기해야 한다.

@@ -124,8 +124,13 @@ create table if not exists run_log (
   status           text not null default 'running',  -- 'running' | 'success' | 'failed'
   trigger_source   text not null,                      -- 'cron' | 'manual'
   games_processed  int,
-  error_message    text
+  error_message    text,
+  gemini_calls     int not null default 0  -- 이 실행에서 실제로 호출한 Gemini API 횟수(재시도 포함).
+                                            -- 구글이 공식 제공하는 쿼터 수치가 아니라, 우리가 직접 센 근사치.
 );
+
+-- 이미 배포된 DB에는 위 create table이 no-op이라 컬럼이 따로 필요하면 아래를 실행:
+alter table run_log add column if not exists gemini_calls int not null default 0;
 
 alter table run_log enable row level security;
 

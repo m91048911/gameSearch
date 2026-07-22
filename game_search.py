@@ -27,6 +27,8 @@ Tavily 사용량(크레딧) 절감 장치 두 가지:
 
 run_all_games(trigger_source)가 실제 배치 실행의 진입점이며, 시작/종료를 run_log 테이블에 기록한다.
 admin_server.py(FastAPI)의 /run이 관리자 강제 실행 시 이 함수를 그대로 재사용한다 (trigger_source="manual").
+Gemini는 구글이 API 키로 조회 가능한 공식 사용량 엔드포인트를 제공하지 않으므로, run_log.gemini_calls에
+"이번 실행에서 실제로 호출한 횟수"(재시도 포함)를 직접 세서 기록한다 — 관리자 페이지의 근사치 표시용.
 
 필요 환경변수 (.env):
   TAVILY_API_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY
@@ -234,6 +236,20 @@ def _extract_retry_delay_seconds(message: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
+# 이번 run_all_games() 실행에서 실제로 Gemini API를 호출한 횟수(재시도 포함).
+# 구글 공식 쿼터 API가 따로 없어서, 관리자 페이지에 "오늘 대략 몇 번 썼는지" 보여주기 위해 우리가 직접 센다.
+_gemini_call_count = 0
+
+
+def reset_gemini_call_count():
+    global _gemini_call_count
+    _gemini_call_count = 0
+
+
+def get_gemini_call_count() -> int:
+    return _gemini_call_count
+
+
 def _generate_content_with_retry(client: genai.Client, prompt: str, max_retries: int = 4, base_delay: int = 10):
     """Gemini 호출 실패를 에러 종류별로 다르게 다룬다.
 
@@ -249,10 +265,12 @@ def _generate_content_with_retry(client: genai.Client, prompt: str, max_retries:
     quota_markers = ("RESOURCE_EXHAUSTED", "429")
     transient_markers = ("UNAVAILABLE", "503", "DEADLINE_EXCEEDED")
 
+    global _gemini_call_count
     quota_retry_used = False
     attempt = 0
     while True:
         try:
+            _gemini_call_count += 1
             return client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         except Exception as e:
             msg = str(e)
@@ -415,13 +433,14 @@ def _start_run_log(client, trigger_source: str) -> int:
     return res.data[0]["id"]
 
 
-def _finish_run_log(client, run_id: int, status: str, games_processed: int, error_message: str = None):
+def _finish_run_log(client, run_id: int, status: str, games_processed: int, error_message: str = None, gemini_calls: int = 0):
     client.table("run_log").update(
         {
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "status": status,
             "games_processed": games_processed,
             "error_message": error_message,
+            "gemini_calls": gemini_calls,
         }
     ).eq("id", run_id).execute()
 
@@ -450,6 +469,7 @@ def run_all_games(trigger_source: str = "cron") -> dict:
         return {"processed": 0, "total": 0, "errors": [], "skipped": True}
 
     run_id = _start_run_log(supabase, trigger_source)
+    reset_gemini_call_count()
 
     try:
         tavily = TavilyClient(api_key=TAVILY_API_KEY)
@@ -501,12 +521,16 @@ def run_all_games(trigger_source: str = "cron") -> dict:
         _finish_run_log(
             supabase, run_id, status=status, games_processed=processed,
             error_message="; ".join(errors) if errors else None,
+            gemini_calls=get_gemini_call_count(),
         )
-        log(f"전체 처리 완료 (성공 {processed}/{len(games)})")
+        log(f"전체 처리 완료 (성공 {processed}/{len(games)}, Gemini 호출 {get_gemini_call_count()}회)")
         return {"processed": processed, "total": len(games), "errors": errors}
 
     except Exception as e:
-        _finish_run_log(supabase, run_id, status="failed", games_processed=0, error_message=str(e))
+        _finish_run_log(
+            supabase, run_id, status="failed", games_processed=0, error_message=str(e),
+            gemini_calls=get_gemini_call_count(),
+        )
         raise
 
 

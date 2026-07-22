@@ -89,3 +89,53 @@ def test_status_needs_correct_secret(client, monkeypatch):
 
     response = client.get("/status", headers={"X-Admin-Secret": "wrong"})
     assert response.status_code == 401
+
+
+# ---- /usage (Tavily 사용량 프록시) -----------------------------------------
+# 실제 Tavily API는 절대 호출하지 않는다 — requests.get을 mock으로 대체한다.
+
+
+def test_usage_rejects_wrong_secret(client):
+    response = client.get("/usage", headers={"X-Admin-Secret": "wrong-secret"})
+    assert response.status_code == 401
+
+
+def test_usage_rejects_missing_tavily_key(client, monkeypatch):
+    monkeypatch.setattr(admin_server, "TAVILY_API_KEY", None)
+    response = client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
+    assert response.status_code == 500
+
+
+def test_usage_returns_tavily_response_on_success(client, monkeypatch):
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.json.return_value = {"key": {"usage": 150, "limit": 1000}}
+    monkeypatch.setattr(admin_server, "TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setattr(admin_server.requests, "get", MagicMock(return_value=fake_response))
+
+    response = client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
+
+    assert response.status_code == 200
+    assert response.json() == {"key": {"usage": 150, "limit": 1000}}
+    called_headers = admin_server.requests.get.call_args.kwargs["headers"]
+    assert called_headers["Authorization"] == "Bearer tvly-test-key"
+
+
+def test_usage_returns_502_when_tavily_call_fails(client, monkeypatch):
+    monkeypatch.setattr(admin_server, "TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setattr(
+        admin_server.requests, "get", MagicMock(side_effect=admin_server.requests.RequestException("boom"))
+    )
+
+    response = client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
+    assert response.status_code == 502
+
+
+def test_usage_returns_502_when_tavily_returns_error_status(client, monkeypatch):
+    fake_response = MagicMock()
+    fake_response.status_code = 401
+    monkeypatch.setattr(admin_server, "TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setattr(admin_server.requests, "get", MagicMock(return_value=fake_response))
+
+    response = client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
+    assert response.status_code == 502

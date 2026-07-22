@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './supabaseClient'
 
@@ -17,6 +17,32 @@ type RunLogRow = {
   trigger_source: string
   games_processed: number | null
   error_message: string | null
+  gemini_calls: number | null
+}
+
+// /api/admin/usage(→ 오라클 VM /usage → Tavily 공식 GET /usage)가 그대로 돌려주는 모양.
+// 우리가 실제로 쓰는 필드만 옵셔널로 선언 — Tavily가 필드를 더 추가해도 깨지지 않는다.
+type TavilyUsage = {
+  key?: { usage?: number; limit?: number | null }
+  account?: { current_plan?: string; plan_usage?: number; plan_limit?: number }
+}
+
+// Gemini는 구글이 API 키로 조회 가능한 공식 사용량 엔드포인트를 제공하지 않는다.
+// 대신 run_log.gemini_calls(우리가 직접 센 호출 횟수)를, 구글의 실제 쿼터 리셋 기준인
+// "태평양 시간(America/Los_Angeles) 자정"에 맞춰 "오늘" 몫만 합산해서 근사치로 보여준다.
+export function pacificDateString(date: Date): string {
+  // en-CA 로케일은 YYYY-MM-DD 형식을 그대로 내보내서 문자열 비교(같은 날인지)에 바로 쓸 수 있다.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(date)
+}
+
+export function sumTodayGeminiCalls(
+  runs: { started_at: string; gemini_calls: number | null }[],
+  now: Date = new Date(),
+): number {
+  const today = pacificDateString(now)
+  return runs
+    .filter((r) => pacificDateString(new Date(r.started_at)) === today)
+    .reduce((sum, r) => sum + (r.gemini_calls ?? 0), 0)
 }
 
 type GameOption = {
@@ -67,6 +93,11 @@ function AdminApp() {
   // "강제 업데이트" 버튼 상태
   const [triggering, setTriggering] = useState(false)
   const [triggerMessage, setTriggerMessage] = useState('')
+
+  // "API 사용량" 패널 상태 (Tavily는 외부 API 응답 그대로, Gemini는 runs에서 계산하는 근사치)
+  const [usage, setUsage] = useState<TavilyUsage | null>(null)
+  const [usageError, setUsageError] = useState('')
+  const [usageLoading, setUsageLoading] = useState(false)
 
   // "일정 직접 추가" 패널 상태: 게임 드롭다운 목록 + 지금까지 수동으로 추가한 일정(source='manual') 목록
   const [games, setGames] = useState<GameOption[]>([])
@@ -150,14 +181,48 @@ function AdminApp() {
     setManualEventsLoading(false)
   }
 
-  // 로그인이 완료된 시점(session이 채워진 순간)에 대시보드에 필요한 데이터 3종을 한꺼번에 불러온다.
+  // Tavily 사용량 조회. trigger-run.ts와 같은 패턴 — 로그인 세션의 access_token을 실어
+  // /api/admin/usage(Vercel 서버리스 함수)에 보내면, 그 함수가 관리자 여부를 확인하고
+  // Tailscale Funnel로 오라클 VM의 /usage(=Tavily 공식 GET /usage 프록시)를 대신 호출한다.
+  const loadUsage = async () => {
+    setUsageLoading(true)
+    setUsageError('')
+    try {
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
+      if (!token) {
+        throw new Error('로그인 세션이 만료됐습니다. 새로고침 후 다시 로그인해주세요.')
+      }
+
+      const response = await fetch('/api/admin/usage', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const body = (await response.json().catch(() => ({}))) as TavilyUsage & { error?: string }
+
+      if (!response.ok) {
+        throw new Error(body.error ?? `HTTP ${response.status}`)
+      }
+      setUsage(body)
+    } catch (err) {
+      setUsageError(err instanceof Error ? err.message : '요청에 실패했습니다.')
+    } finally {
+      setUsageLoading(false)
+    }
+  }
+
+  // 로그인이 완료된 시점(session이 채워진 순간)에 대시보드에 필요한 데이터를 한꺼번에 불러온다.
   useEffect(() => {
     if (session) {
       loadRuns()
       loadGames()
       loadManualEvents()
+      loadUsage()
     }
   }, [session])
+
+  // Gemini는 공식 사용량 API가 없어서, 이미 불러온 run_log(runs)에서 태평양 시간 기준
+  // "오늘" 실행분의 gemini_calls만 더해 근사치를 낸다. runs가 바뀔 때만 다시 계산한다.
+  const todayGeminiCalls = useMemo(() => sumTodayGeminiCalls(runs), [runs])
 
   // "일정 직접 추가" 폼 제출. verified=true/confidence='high'로 고정해서 저장하는데, 관리자가
   // 직접 확인하고 넣는 정보라 자동 검색 결과처럼 별도 검증이 필요 없기 때문이다.
@@ -327,6 +392,42 @@ function AdminApp() {
         {triggerMessage && <p className="status-message">{triggerMessage}</p>}
       </section>
 
+      {/* 패널 1.5: API 사용량 — Tavily는 공식 /usage 응답, Gemini는 우리가 직접 센 근사치 */}
+      <section className="admin-panel">
+        <div className="admin-panel-header">
+          <h3>API 사용량</h3>
+          <button type="button" onClick={loadUsage} disabled={usageLoading}>
+            새로고침
+          </button>
+        </div>
+        {usageError && <p className="status-message status-error">{usageError}</p>}
+        {usageLoading && <p className="status-message">불러오는 중...</p>}
+
+        <div className="admin-usage-cards">
+          <div className="admin-usage-card">
+            <p className="admin-usage-label">Tavily (이번 결제 주기)</p>
+            {usage?.key ? (
+              <p className="admin-usage-value">
+                {usage.key.usage ?? '-'} / {usage.key.limit ?? '무제한'} 크레딧
+              </p>
+            ) : (
+              !usageLoading && <p className="admin-usage-value">-</p>
+            )}
+            {usage?.account?.current_plan && (
+              <p className="admin-usage-sub">
+                플랜: {usage.account.current_plan} ({usage.account.plan_usage ?? '-'} / {usage.account.plan_limit ?? '-'})
+              </p>
+            )}
+          </div>
+
+          <div className="admin-usage-card">
+            <p className="admin-usage-label">Gemini (오늘, 태평양 시간 기준 · 근사치)</p>
+            <p className="admin-usage-value">{todayGeminiCalls}회</p>
+            <p className="admin-usage-sub">구글 공식 쿼터 API가 없어 우리가 직접 센 호출 횟수입니다.</p>
+          </div>
+        </div>
+      </section>
+
       {/* 패널 2: 일정 직접 추가 — 자동 검색이 놓친 일정을 수동 등록 + 지금까지 추가한 목록/삭제 */}
       <section className="admin-panel">
         <div className="admin-panel-header">
@@ -454,6 +555,7 @@ function AdminApp() {
                 <th>상태</th>
                 <th>트리거</th>
                 <th>처리된 게임 수</th>
+                <th>Gemini 호출</th>
                 <th>에러</th>
               </tr>
             </thead>
@@ -467,6 +569,7 @@ function AdminApp() {
                   </td>
                   <td>{run.trigger_source}</td>
                   <td>{run.games_processed ?? '-'}</td>
+                  <td>{run.gemini_calls ?? '-'}</td>
                   <td>{run.error_message ?? '-'}</td>
                 </tr>
               ))}

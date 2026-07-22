@@ -796,6 +796,38 @@ a {
   color: var(--text-subtle);
 }
 
+.admin-usage-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.admin-usage-card {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--bg-subtle, #f8fafc);
+  border: 1px solid var(--border);
+}
+
+.admin-usage-label {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-subtle);
+}
+
+.admin-usage-value {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.admin-usage-sub {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-subtle);
+}
+
 .admin-form {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
