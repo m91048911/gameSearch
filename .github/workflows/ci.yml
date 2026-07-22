@@ -1,0 +1,38 @@
+name: CI
+
+# push/PR마다 pytest(백엔드)와 Vitest+빌드(프론트엔드)를 자동으로 돌려서,
+# 로컬에서 깜빡하고 안 돌린 테스트가 배포 전에 걸리도록 한다.
+# Vercel 자동배포(CD)는 이미 되고 있으니, 이 워크플로우는 순수하게 CI(테스트) 역할만 한다.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -v
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run test
+      - run: npm run build
