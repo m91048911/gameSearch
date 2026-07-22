@@ -42,7 +42,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 // 사이드바에 보여줄 선호 순서. 목록에 없는 카테고리는 뒤에 알파벳순으로 붙는다.
 const CATEGORY_ORDER = ['update', 'pickup', 'broadcast', 'launch']
 
-function categoryLabel(key: string): string {
+export function categoryLabel(key: string): string {
   return CATEGORY_LABELS[key] ?? key
 }
 
@@ -60,7 +60,7 @@ const GAME_COLOR_PALETTE = [
   '#f97316', // orange
 ]
 
-function colorForGame(name: string): string {
+export function colorForGame(name: string): string {
   let hash = 0
   for (let i = 0; i < name.length; i += 1) {
     hash = (hash * 31 + name.charCodeAt(i)) >>> 0
@@ -70,10 +70,10 @@ function colorForGame(name: string): string {
 
 // ---- 날짜 유틸 ---------------------------------------------------------
 
-const formatIsoDate = (year: number, month: number, day: number) =>
+export const formatIsoDate = (year: number, month: number, day: number) =>
   `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 
-const buildCalendarDays = (year: number, month: number): CalendarDay[] => {
+export const buildCalendarDays = (year: number, month: number): CalendarDay[] => {
   const firstDayIndex = new Date(year, month, 1).getDay()
   const daysInMonth = new Date(year, month + 1, 0).getDate()
   const previousMonthDays = new Date(year, month, 0).getDate()
@@ -95,7 +95,7 @@ const buildCalendarDays = (year: number, month: number): CalendarDay[] => {
   return calendar
 }
 
-function mapRow(row: GameEventRow): ScheduleItem {
+export function mapRow(row: GameEventRow): ScheduleItem {
   return {
     id: String(row.id),
     date: row.event_date,

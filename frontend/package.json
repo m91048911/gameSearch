@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.1",
@@ -20,6 +21,7 @@
     "@vercel/node": "^5.8.24",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "~5.9.3",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "vitest": "^3.0.5"
   }
 }
