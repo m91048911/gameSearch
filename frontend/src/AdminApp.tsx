@@ -570,7 +570,17 @@ function AdminApp() {
                   <td>{run.trigger_source}</td>
                   <td>{run.games_processed ?? '-'}</td>
                   <td>{run.gemini_calls ?? '-'}</td>
-                  <td>{run.error_message ?? '-'}</td>
+                  <td>
+                    {run.error_message ? (
+                      // 에러 메시지가 길면 표가 한없이 늘어나므로, 기본은 접어두고 클릭해야 펼쳐진다.
+                      <details className="admin-error-details">
+                        <summary>에러 보기</summary>
+                        <p className="admin-error-detail-text">{run.error_message}</p>
+                      </details>
+                    ) : (
+                      '-'
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
