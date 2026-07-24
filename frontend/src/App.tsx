@@ -67,6 +67,13 @@ const GAME_COLOR_PALETTE = [
   '#f97316', // orange
 ]
 
+// 방문자 수의 "오늘" 기준은 한국시간(Asia/Seoul) 자정이다 — schema.sql의 increment_site_visits()가
+// 같은 기준으로 site_visits_daily 행을 나누므로, 클라이언트도 같은 기준으로 조회해야 같은 행을 가리킨다.
+export function koreaDateString(date: Date): string {
+  // en-CA 로케일은 YYYY-MM-DD 형식을 그대로 내보내서 DB의 date 컬럼과 문자열로 바로 비교할 수 있다.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(date)
+}
+
 export function colorForGame(name: string): string {
   let hash = 0
   for (let i = 0; i < name.length; i += 1) {
@@ -129,6 +136,7 @@ function App() {
   const [errorMessage, setErrorMessage] = useState('')
   const [allGames, setAllGames] = useState<GameOption[]>([]) // /api/games에서 받아온 "수집 대상 게임 전체" 목록
   const [visitCount, setVisitCount] = useState<number | null>(null) // 왼쪽 사이드바 하단 "누적 방문" 표시용
+  const [todayVisitCount, setTodayVisitCount] = useState<number | null>(null) // 같은 곳의 "오늘 방문" 표시용
 
   // 사이드바 필터 상태 3종. selectedCategory='all'이 기본(필터링 없음)이고,
   // selectedGame=null도 마찬가지로 "게임 필터 없음"을 의미한다.
@@ -191,9 +199,9 @@ function App() {
     }
   }, [])
 
-  // 누적 방문자 수. sessionStorage로 "이 브라우저 세션에서 이미 세었는지"만 구분해, 새로고침이나
+  // 방문자 수(오늘/누적). sessionStorage로 "이 브라우저 세션에서 이미 세었는지"만 구분해, 새로고침이나
   // 뒤로가기로 같은 방문자가 중복 카운트되지 않게 한다(탭/브라우저를 새로 열면 다시 센다).
-  // 이미 센 세션이면 증가시키지 않고 현재 값만 읽어와서, 화면엔 항상 최신 총합이 보이게 한다.
+  // 이미 센 세션이면 증가시키지 않고 현재 값만 읽어와서, 화면엔 항상 최신 값이 보이게 한다.
   // 장식성 지표라 실패해도 조용히 무시하고 달력 기능에는 영향을 주지 않는다.
   useEffect(() => {
     let cancelled = false
@@ -202,12 +210,23 @@ function App() {
     const trackVisit = async () => {
       try {
         if (sessionStorage.getItem(SESSION_KEY)) {
-          const { data, error } = await supabase.from('site_visits').select('count').eq('id', 1).single()
-          if (!error && data && !cancelled) setVisitCount(data.count as number)
+          const today = koreaDateString(new Date())
+          const [totalRes, todayRes] = await Promise.all([
+            supabase.from('site_visits').select('count').eq('id', 1).single(),
+            supabase.from('site_visits_daily').select('count').eq('visit_date', today).maybeSingle(),
+          ])
+          if (cancelled) return
+          if (!totalRes.error && totalRes.data) setVisitCount(totalRes.data.count as number)
+          if (!todayRes.error) setTodayVisitCount((todayRes.data?.count as number | undefined) ?? 0)
         } else {
+          // increment_site_visits()는 table(total, today)를 반환하므로 supabase-js에서는 행 배열로 온다.
           const { data, error } = await supabase.rpc('increment_site_visits')
-          if (!error && typeof data === 'number') {
-            if (!cancelled) setVisitCount(data)
+          const row = data?.[0] as { total: number; today: number } | undefined
+          if (!error && row) {
+            if (!cancelled) {
+              setVisitCount(row.total)
+              setTodayVisitCount(row.today)
+            }
             sessionStorage.setItem(SESSION_KEY, '1')
           }
         }
@@ -371,7 +390,11 @@ function App() {
             {selectedCategory === 'all' ? '전체일정' : categoryLabel(selectedCategory)}
             {selectedGame ? ` · ${selectedGame}` : ''} 기준으로 달력이 필터링됩니다.
           </p>
-          {visitCount !== null && <p className="visitor-count">누적 방문 {visitCount.toLocaleString()}회</p>}
+          {(visitCount !== null || todayVisitCount !== null) && (
+            <p className="visitor-count">
+              오늘 {(todayVisitCount ?? 0).toLocaleString()}회 · 누적 {(visitCount ?? 0).toLocaleString()}회
+            </p>
+          )}
         </div>
       </aside>
 

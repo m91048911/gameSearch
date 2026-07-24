@@ -9,7 +9,23 @@ import type { GameEventRow } from './supabaseClient'
 // supabaseClient를 가짜로 대체해 import 시점의 부작용(createClient 호출)을 막는다.
 vi.mock('./supabaseClient', () => ({ supabase: { from: vi.fn(), rpc: vi.fn() } }))
 
-const { buildCalendarDays, categoryLabel, colorForGame, formatIsoDate, mapRow } = await import('./App')
+const { buildCalendarDays, categoryLabel, colorForGame, formatIsoDate, koreaDateString, mapRow } = await import(
+  './App'
+)
+
+describe('koreaDateString', () => {
+  it('UTC로는 자정을 안 넘겼어도 한국시간(UTC+9)으로는 이미 다음날일 수 있다', () => {
+    // 2026-07-21T16:00:00Z = 한국시간 2026-07-22 01:00
+    const utc = new Date('2026-07-21T16:00:00Z')
+    expect(koreaDateString(utc)).toBe('2026-07-22')
+  })
+
+  it('한국시간 기준으로 아직 자정 전이면 그 전날 날짜를 반환한다', () => {
+    // 2026-07-21T10:00:00Z = 한국시간 2026-07-21 19:00
+    const utc = new Date('2026-07-21T10:00:00Z')
+    expect(koreaDateString(utc)).toBe('2026-07-21')
+  })
+})
 
 describe('formatIsoDate', () => {
   it('한 자리 월/일을 0으로 채운다', () => {

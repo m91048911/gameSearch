@@ -139,8 +139,9 @@ create policy "admin can read run_log"
   on run_log for select
   using (auth.jwt() ->> 'email' = 'm91048911@gmail.com');
 
--- 공개 캘린더 왼쪽 하단에 보여줄 누적 방문자 수. 행이 딱 하나(id=1)뿐인 카운터 테이블이다.
--- anon key로 이 테이블에 직접 update를 허용하면 누구나 REST API로 count를 아무 값으로나
+-- 공개 캘린더 왼쪽 하단에 보여줄 방문자 수: 누적 총합(site_visits, 행 하나)과
+-- 하루 단위 집계(site_visits_daily, 날짜별 행 하나 · 한국시간 기준)를 분리해서 관리한다.
+-- anon key로 이 테이블들에 직접 update를 허용하면 누구나 REST API로 count를 아무 값으로나
 -- 바꿀 수 있으므로, 쓰기는 아래 increment_site_visits() 함수(한 번에 1씩만 증가)로만 허용한다.
 create table if not exists site_visits (
   id    smallint primary key default 1,
@@ -158,19 +159,43 @@ create policy "anyone can read site_visits"
   on site_visits for select
   using (true);
 
+create table if not exists site_visits_daily (
+  visit_date date primary key,
+  count      bigint not null default 0
+);
+
+alter table site_visits_daily enable row level security;
+
+drop policy if exists "anyone can read site_visits_daily" on site_visits_daily;
+create policy "anyone can read site_visits_daily"
+  on site_visits_daily for select
+  using (true);
+
+-- 함수의 반환 타입이 bigint(총합만) -> table(total, today)로 바뀌었으므로, 기존 함수가 있으면
+-- create or replace로는 안 되고 먼저 drop해야 한다 (반환 타입 변경은 drop 후 재생성만 가능).
+drop function if exists increment_site_visits();
+
 -- security definer로 RLS를 우회하되, 함수 안에서 "1만 증가시키고 새 값을 반환"으로만
 -- 동작을 좁혀뒀기 때문에 anon에게 실행 권한을 줘도 안전하다.
+-- "오늘"의 기준은 한국시간(Asia/Seoul) 자정이다 — 방문자 대부분이 한국 사용자라 그게 직관적이다.
 create or replace function increment_site_visits()
-returns bigint
+returns table(total bigint, today bigint)
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
-  new_count bigint;
+  v_total bigint;
+  v_today bigint;
+  v_date  date := (now() at time zone 'Asia/Seoul')::date;
 begin
-  update site_visits set count = count + 1 where id = 1 returning count into new_count;
-  return new_count;
+  update site_visits set count = count + 1 where id = 1 returning count into v_total;
+
+  insert into site_visits_daily (visit_date, count) values (v_date, 1)
+    on conflict (visit_date) do update set count = site_visits_daily.count + 1
+    returning count into v_today;
+
+  return query select v_total, v_today;
 end;
 $$;
 
