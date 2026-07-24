@@ -206,6 +206,14 @@ a {
   color: rgba(226, 232, 240, 0.72);
 }
 
+.visitor-count {
+  margin-top: 12px !important;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  font-size: 11px !important;
+  color: rgba(196, 181, 253, 0.7) !important;
+}
+
 /* ---- 메인 콘텐츠 ---- */
 
 .content {

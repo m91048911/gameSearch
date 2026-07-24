@@ -138,3 +138,40 @@ drop policy if exists "admin can read run_log" on run_log;
 create policy "admin can read run_log"
   on run_log for select
   using (auth.jwt() ->> 'email' = 'm91048911@gmail.com');
+
+-- 공개 캘린더 왼쪽 하단에 보여줄 누적 방문자 수. 행이 딱 하나(id=1)뿐인 카운터 테이블이다.
+-- anon key로 이 테이블에 직접 update를 허용하면 누구나 REST API로 count를 아무 값으로나
+-- 바꿀 수 있으므로, 쓰기는 아래 increment_site_visits() 함수(한 번에 1씩만 증가)로만 허용한다.
+create table if not exists site_visits (
+  id    smallint primary key default 1,
+  count bigint not null default 0,
+  constraint site_visits_singleton check (id = 1)
+);
+
+insert into site_visits (id, count) values (1, 0)
+  on conflict (id) do nothing;
+
+alter table site_visits enable row level security;
+
+drop policy if exists "anyone can read site_visits" on site_visits;
+create policy "anyone can read site_visits"
+  on site_visits for select
+  using (true);
+
+-- security definer로 RLS를 우회하되, 함수 안에서 "1만 증가시키고 새 값을 반환"으로만
+-- 동작을 좁혀뒀기 때문에 anon에게 실행 권한을 줘도 안전하다.
+create or replace function increment_site_visits()
+returns bigint
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  new_count bigint;
+begin
+  update site_visits set count = count + 1 where id = 1 returning count into new_count;
+  return new_count;
+end;
+$$;
+
+grant execute on function increment_site_visits() to anon, authenticated;

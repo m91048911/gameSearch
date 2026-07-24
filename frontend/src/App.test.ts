@@ -1,9 +1,15 @@
 // App.tsx의 순수 함수 유닛 테스트. 컴포넌트 렌더링 없이 로직만 검증한다.
 // 실행: npm run test (frontend 폴더에서)
 
-import { describe, expect, it } from 'vitest'
-import { buildCalendarDays, categoryLabel, colorForGame, formatIsoDate, mapRow } from './App'
+import { describe, expect, it, vi } from 'vitest'
 import type { GameEventRow } from './supabaseClient'
+
+// App.tsx는 방문자 수 카운트를 위해 최상단에서 실제 Supabase 클라이언트를 생성한다(./supabaseClient).
+// 테스트 환경엔 .env가 없어 그 생성이 실패하므로, 순수 함수만 테스트하는 이 파일에서는
+// supabaseClient를 가짜로 대체해 import 시점의 부작용(createClient 호출)을 막는다.
+vi.mock('./supabaseClient', () => ({ supabase: { from: vi.fn(), rpc: vi.fn() } }))
+
+const { buildCalendarDays, categoryLabel, colorForGame, formatIsoDate, mapRow } = await import('./App')
 
 describe('formatIsoDate', () => {
   it('한 자리 월/일을 0으로 채운다', () => {

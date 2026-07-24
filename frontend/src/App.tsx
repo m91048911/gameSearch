@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { supabase } from './supabaseClient'
 import type { GameEventRow } from './supabaseClient'
 
 // ---- 타입 정의 -------------------------------------------------------
@@ -127,6 +128,7 @@ function App() {
   const [status, setStatus] = useState<LoadStatus>('loading') // /api/events 로딩 상태 (달력 위 안내 메시지용)
   const [errorMessage, setErrorMessage] = useState('')
   const [allGames, setAllGames] = useState<GameOption[]>([]) // /api/games에서 받아온 "수집 대상 게임 전체" 목록
+  const [visitCount, setVisitCount] = useState<number | null>(null) // 왼쪽 사이드바 하단 "누적 방문" 표시용
 
   // 사이드바 필터 상태 3종. selectedCategory='all'이 기본(필터링 없음)이고,
   // selectedGame=null도 마찬가지로 "게임 필터 없음"을 의미한다.
@@ -184,6 +186,37 @@ function App() {
     }
 
     loadGames()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // 누적 방문자 수. sessionStorage로 "이 브라우저 세션에서 이미 세었는지"만 구분해, 새로고침이나
+  // 뒤로가기로 같은 방문자가 중복 카운트되지 않게 한다(탭/브라우저를 새로 열면 다시 센다).
+  // 이미 센 세션이면 증가시키지 않고 현재 값만 읽어와서, 화면엔 항상 최신 총합이 보이게 한다.
+  // 장식성 지표라 실패해도 조용히 무시하고 달력 기능에는 영향을 주지 않는다.
+  useEffect(() => {
+    let cancelled = false
+    const SESSION_KEY = 'gs_visit_counted'
+
+    const trackVisit = async () => {
+      try {
+        if (sessionStorage.getItem(SESSION_KEY)) {
+          const { data, error } = await supabase.from('site_visits').select('count').eq('id', 1).single()
+          if (!error && data && !cancelled) setVisitCount(data.count as number)
+        } else {
+          const { data, error } = await supabase.rpc('increment_site_visits')
+          if (!error && typeof data === 'number') {
+            if (!cancelled) setVisitCount(data)
+            sessionStorage.setItem(SESSION_KEY, '1')
+          }
+        }
+      } catch {
+        // 무시 — 방문자 수는 없어도 캘린더 기능에는 지장 없다.
+      }
+    }
+
+    trackVisit()
     return () => {
       cancelled = true
     }
@@ -338,6 +371,7 @@ function App() {
             {selectedCategory === 'all' ? '전체일정' : categoryLabel(selectedCategory)}
             {selectedGame ? ` · ${selectedGame}` : ''} 기준으로 달력이 필터링됩니다.
           </p>
+          {visitCount !== null && <p className="visitor-count">누적 방문 {visitCount.toLocaleString()}회</p>}
         </div>
       </aside>
 
