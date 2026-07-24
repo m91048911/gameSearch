@@ -8,6 +8,7 @@ game_search.py의 순수 함수 + 목(mock) 기반 유닛 테스트.
 """
 
 import time
+from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
@@ -260,6 +261,64 @@ def test_quota_exhausted_delay_is_capped_at_60_seconds(monkeypatch):
         gs._generate_content_with_retry(fake_client, "아무 프롬프트")
 
     assert sleep_calls == [60]  # 최대 60초까지만 기다린다
+
+
+# ---- save_events ------------------------------------------------------------
+# 실제 운영 중 발견된 버그: 재검색이 과거 일정을 다시 못 찾으면 delete-then-insert 때문에
+# 그 일정이 그냥 사라졌다. delete 대상을 "오늘 이후" 이벤트로만 좁혀서 과거 일정을 보존한다.
+
+
+def test_save_events_does_nothing_when_game_id_is_none():
+    fake_client = MagicMock()
+    gs.save_events(fake_client, None, "원신", {"id": "version_update", "calendar_category": "update"}, [])
+    fake_client.table.assert_not_called()
+
+
+def test_save_events_delete_targets_only_todays_or_future_events(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 7, 24)
+
+    monkeypatch.setattr(gs, "date", FixedDate)
+
+    fake_client = MagicMock()
+    topic = {"id": "version_update", "calendar_category": "update"}
+
+    gs.save_events(fake_client, 1, "원신", topic, [])
+
+    delete_chain = fake_client.table.return_value.delete.return_value
+    delete_chain.eq.assert_any_call("game_id", 1)
+    delete_chain.eq.return_value.eq.assert_any_call("topic_id", "version_update")
+    delete_chain.eq.return_value.eq.return_value.eq.assert_any_call("source", "search")
+    delete_chain.eq.return_value.eq.return_value.eq.return_value.gte.assert_any_call("event_date", "2026-07-24")
+
+
+def test_save_events_inserts_only_rows_with_valid_title_and_date():
+    fake_client = MagicMock()
+    topic = {"id": "version_update", "calendar_category": "update"}
+    events = [
+        {"date": "2026-08-01", "title": "6.4 버전 업데이트", "source_url": "https://x"},
+        {"date": "not-a-date", "title": "잘못된 날짜"},  # 날짜 형식이 틀려서 제외돼야 함
+        {"date": "2026-08-02", "title": ""},  # 제목이 없어서 제외돼야 함
+    ]
+
+    gs.save_events(fake_client, 1, "원신", topic, events)
+
+    inserted = fake_client.table.return_value.insert.call_args[0][0]
+    assert len(inserted) == 1
+    assert inserted[0]["title"] == "6.4 버전 업데이트"
+    assert inserted[0]["event_date"] == "2026-08-01"
+    assert inserted[0]["source"] == "search"
+
+
+def test_save_events_skips_insert_when_no_valid_rows():
+    fake_client = MagicMock()
+    topic = {"id": "version_update", "calendar_category": "update"}
+
+    gs.save_events(fake_client, 1, "원신", topic, [{"date": "bad", "title": "x"}])
+
+    fake_client.table.return_value.insert.assert_not_called()
 
 
 # ---- get_confirmed_future_topic_ids ---------------------------------------

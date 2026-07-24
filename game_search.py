@@ -147,16 +147,23 @@ def _valid_iso_date(value) -> bool:
 
 
 def save_events(client, game_id, game_name: str, topic: dict, events: list):
-    """이 (game_id, topic) 조합의 기존 '자동 검색' 이벤트만 지우고 새로 검색된 이벤트로 갈아끼운다.
-    (game_events는 매일 새로 계산되는 결과라 upsert보다 delete-then-insert가 단순하고 안전하다.)
-    source='manual'인 행(관리자 페이지에서 직접 추가한 일정)은 절대 건드리지 않는다."""
+    """이 (game_id, topic) 조합의 기존 '자동 검색' 이벤트 중 아직 지나지 않은(오늘 이후) 것만 지우고
+    새로 검색된 이벤트로 갈아끼운다. (game_events는 매일 새로 계산되는 결과라 upsert보다
+    delete-then-insert가 단순하고 안전하다.)
+
+    과거 날짜(event_date < 오늘) 이벤트는 이 delete 대상에서 제외한다 — 한 번 확인된 과거 일정은
+    캘린더의 이력으로 남아야 하는데, 재검색은 보통 "다가오는" 일정 위주라 지난 일정을 다시 찾아내지
+    못하는 경우가 흔하다. 예전에는 지운 뒤 못 채우면 그대로 사라졌었다(실제 운영 중 발견된 버그).
+
+    source='manual'인 행(관리자 페이지에서 직접 추가한 일정)은 이 함수가 절대 건드리지 않는다."""
     if game_id is None:
         return  # CLI 테스트 모드(DB에 없는 게임)에서는 저장하지 않음
 
     topic_id = topic["id"]
+    today_iso = date.today().isoformat()
     client.table("game_events").delete().eq("game_id", game_id).eq("topic_id", topic_id).eq(
         "source", "search"
-    ).execute()
+    ).gte("event_date", today_iso).execute()
 
     rows = [
         {
