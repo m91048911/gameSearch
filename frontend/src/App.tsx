@@ -325,10 +325,14 @@ function App() {
   const goNextMonth = () => setViewDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))
   const goToday = () => setViewDate(new Date(today.getFullYear(), today.getMonth(), 1))
 
-  // 상단 "다음 일정" 카드에 쓸 값. 오늘 이후(오늘 포함) 일정 중 가장 가까운 것 하나만 뽑는다.
-  const upcoming = [...visibleItems]
-    .filter((item) => item.date >= formatIsoDate(today.getFullYear(), today.getMonth(), today.getDate()))
-    .sort((a, b) => a.date.localeCompare(b.date))[0]
+  const todayIso = formatIsoDate(today.getFullYear(), today.getMonth(), today.getDate())
+
+  // 상단 "오늘 일정" 카드에 쓸 값. 현재 필터(visibleItems) 기준으로 날짜가 오늘인 것만 센다.
+  const todayItems = visibleItems.filter((item) => item.date === todayIso)
+
+  // 상단 "다음 일정" 카드에 쓸 값. 오늘 일정과 겹치지 않도록, 오늘보다 뒤(오늘 제외)인 일정 중
+  // 가장 가까운 것 하나만 뽑는다.
+  const upcoming = [...visibleItems].filter((item) => item.date > todayIso).sort((a, b) => a.date.localeCompare(b.date))[0]
 
   return (
     <div className="layout-shell">
@@ -416,8 +420,8 @@ function App() {
               <strong>{items.length}</strong>
             </div>
             <div>
-              <span>등록된 게임</span>
-              <strong>{games.length}</strong>
+              <span>오늘 일정</span>
+              <strong>{todayItems.length}건</strong>
             </div>
             <div>
               <span>다음 일정</span>
