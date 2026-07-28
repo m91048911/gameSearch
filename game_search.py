@@ -207,6 +207,7 @@ def search_topic(
     if official_domains:
         search_kwargs["include_domains"] = official_domains
     result = tavily.search(**search_kwargs)
+    log(f"[{game_name}] Tavily 검색: \"{query}\" (depth={search_depth}) -> 출처 {len(result.get('results', []))}건")
     return {
         "query": query,
         "answer": result.get("answer"),
@@ -317,10 +318,14 @@ def _drop_unknown_source_urls(events_by_topic: dict, raw_results: dict) -> dict:
     실제 Tavily 검색 결과에 존재하지 않는 url을 가진 이벤트는 여기서 그냥 버린다
     (LLM의 협조 여부와 무관하게 항상 적용되는 결정론적 체크)."""
     known = _known_source_urls(raw_results)
-    return {
+    cleaned = {
         topic_id: [e for e in events if e.get("source_url") in known]
         for topic_id, events in events_by_topic.items()
     }
+    dropped = sum(len(events) for events in events_by_topic.values()) - sum(len(events) for events in cleaned.values())
+    if dropped:
+        log(f"검색 결과에 없는 source_url을 가진 이벤트 {dropped}건을 버림 (인젝션/할루시네이션 방어)")
+    return cleaned
 
 
 def extract_with_gemini(client: genai.Client, game_name: str, topics: list, raw_results: dict):
@@ -356,6 +361,7 @@ def extract_with_gemini(client: genai.Client, game_name: str, topics: list, raw_
 
     response = _generate_content_with_retry(client, prompt)
     extracted = _parse_json(response.text)
+    log(f"[{game_name}] Gemini 1차 추출: " + ", ".join(f"{k}={len(v)}건" for k, v in extracted.items()))
     return _drop_unknown_source_urls(extracted, raw_results)
 
 
@@ -402,6 +408,10 @@ def verify_with_gemini(client: genai.Client, game_name: str, topics: list, extra
 
     response = _generate_content_with_retry(client, prompt)
     verified = _parse_json(response.text)
+    log(
+        f"[{game_name}] Gemini 검증: "
+        + ", ".join(f"{k}={sum(1 for e in v if e.get('verified'))}/{len(v)}건 확인" for k, v in verified.items())
+    )
     return _drop_unknown_source_urls(verified, raw_results)
 
 
