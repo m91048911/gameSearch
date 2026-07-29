@@ -421,7 +421,11 @@ function App() {
             </div>
             <div>
               <span>오늘 일정</span>
-              <strong>{todayItems.length}</strong>
+              <strong>
+                {todayItems.length === 1
+                  ? `${todayItems[0].game} · ${todayItems[0].title}`
+                  : todayItems.length}
+              </strong>
             </div>
             <div>
               <span>다음 일정</span>
