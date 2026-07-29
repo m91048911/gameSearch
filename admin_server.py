@@ -25,6 +25,8 @@ ADMIN_API_SECRET을 실어서 이 서버를 대신 호출한다. 이 시크릿�
   ADMIN_RUN_COOLDOWN_SECONDS (선택, 기본 180) - /run 완료 직후 재요청을 막는 대기 시간(초).
     관리자 토큰이 유출되거나 실수로 버튼을 연타해도 Tavily/Gemini 크레딧이 짧은 간격으로
     반복 소모되지 않도록 하는 안전장치.
+  TAVILY_USAGE_CACHE_SECONDS (선택, 기본 60) - /usage 응답을 캐시하는 시간(초).
+    Tavily의 /usage 자체가 짧은 간격 반복 호출에 429를 준다.
 """
 
 import os
@@ -51,6 +53,13 @@ _run_in_progress = False
 # 마지막으로 실행이 "끝난" 시각(time.monotonic() 기준). 서버 재시작하면 초기화되는데,
 # 어차피 쿨다운은 남용 방지용 안전장치일 뿐이라 그 정도는 문제 없다.
 _last_run_finished_at: Optional[float] = None
+
+# Tavily의 /usage 자체가 짧은 간격으로 반복 호출하면 429(rate limit)를 준다 — 크레딧 사용량은
+# 초 단위로 바뀌는 값이 아니니, 관리자 페이지가 새로고침될 때마다 매번 다시 부르는 대신
+# TAVILY_USAGE_CACHE_SECONDS 동안은 캐시해서 돌려준다.
+TAVILY_USAGE_CACHE_SECONDS = int(os.getenv("TAVILY_USAGE_CACHE_SECONDS", "60"))
+_usage_cache: Optional[dict] = None
+_usage_cached_at: Optional[float] = None
 
 
 def _check_secret(x_admin_secret: Optional[str]):
@@ -103,6 +112,11 @@ def usage(x_admin_secret: Optional[str] = Header(default=None)):
     if not TAVILY_API_KEY:
         raise HTTPException(status_code=500, detail="TAVILY_API_KEY가 설정되지 않았습니다.")
 
+    global _usage_cache, _usage_cached_at
+    if _usage_cache is not None and _usage_cached_at is not None:
+        if time.monotonic() - _usage_cached_at < TAVILY_USAGE_CACHE_SECONDS:
+            return _usage_cache
+
     try:
         res = requests.get(
             "https://api.tavily.com/usage",
@@ -113,9 +127,15 @@ def usage(x_admin_secret: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=502, detail=f"Tavily 사용량 조회 실패: {e}")
 
     if res.status_code != 200:
+        # 캐시된 값이 있으면 만료됐어도 실패보다는 낫다 — 429는 대개 이 재시도들 때문이니
+        # 오래된 값이라도 보여주는 편이 관리자 페이지가 그냥 에러만 띄우는 것보다 낫다.
+        if _usage_cache is not None:
+            return _usage_cache
         raise HTTPException(status_code=502, detail=f"Tavily 사용량 조회 실패 (status={res.status_code})")
 
-    return res.json()
+    _usage_cache = res.json()
+    _usage_cached_at = time.monotonic()
+    return _usage_cache
 
 
 @app.post("/run", status_code=202)

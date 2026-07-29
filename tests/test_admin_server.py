@@ -24,6 +24,9 @@ def reset_admin_state(monkeypatch):
     monkeypatch.setattr(admin_server, "RUN_COOLDOWN_SECONDS", 180)
     monkeypatch.setattr(admin_server, "_run_in_progress", False)
     monkeypatch.setattr(admin_server, "_last_run_finished_at", None)
+    monkeypatch.setattr(admin_server, "_usage_cache", None)
+    monkeypatch.setattr(admin_server, "_usage_cached_at", None)
+    monkeypatch.setattr(admin_server, "TAVILY_USAGE_CACHE_SECONDS", 60)
     yield
 
 
@@ -139,3 +142,52 @@ def test_usage_returns_502_when_tavily_returns_error_status(client, monkeypatch)
 
     response = client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
     assert response.status_code == 502
+
+
+# Tavily의 /usage 자체가 짧은 간격의 반복 호출에 429(rate limit)를 주는 걸 실제로 겪었다 —
+# 캐시로 반복 호출을 줄이고, 실패 시에도 오래된 캐시가 있으면 502 대신 그걸 돌려준다.
+
+
+def test_usage_serves_from_cache_without_calling_tavily_again(client, monkeypatch):
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.json.return_value = {"key": {"usage": 1}}
+    mock_get = MagicMock(return_value=fake_response)
+    monkeypatch.setattr(admin_server, "TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setattr(admin_server.requests, "get", mock_get)
+
+    first = client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
+    second = client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
+
+    assert first.json() == second.json() == {"key": {"usage": 1}}
+    mock_get.assert_called_once()  # 두 번째 요청은 캐시로 응답, Tavily를 다시 부르지 않는다
+
+
+def test_usage_refetches_after_cache_expires(client, monkeypatch):
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.json.return_value = {"key": {"usage": 1}}
+    monkeypatch.setattr(admin_server, "TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setattr(admin_server.requests, "get", MagicMock(return_value=fake_response))
+    monkeypatch.setattr(admin_server, "TAVILY_USAGE_CACHE_SECONDS", 0)
+
+    client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
+    response = client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
+
+    assert response.status_code == 200
+    assert admin_server.requests.get.call_count == 2
+
+
+def test_usage_returns_stale_cache_instead_of_502_when_tavily_fails(client, monkeypatch):
+    monkeypatch.setattr(admin_server, "TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setattr(admin_server, "_usage_cache", {"key": {"usage": 5}})
+    monkeypatch.setattr(admin_server, "_usage_cached_at", time.monotonic() - 999)  # 이미 만료된 캐시
+
+    fake_response = MagicMock()
+    fake_response.status_code = 429
+    monkeypatch.setattr(admin_server.requests, "get", MagicMock(return_value=fake_response))
+
+    response = client.get("/usage", headers={"X-Admin-Secret": "test-secret"})
+
+    assert response.status_code == 200
+    assert response.json() == {"key": {"usage": 5}}
