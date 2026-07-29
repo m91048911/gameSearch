@@ -35,6 +35,24 @@ export function pacificDateString(date: Date): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(date)
 }
 
+// Supabase 세션(리프레시 토큰)은 기본적으로 만료 기한이 없어서, 탭을 오래 열어두면 로그인이
+// 무한정 유지된다. Supabase의 공식 세션 만료(Time-box) 설정은 Pro 플랜부터 지원되는데 이 프로젝트는
+// 무료 플랜이라 못 쓴다. 그래서 로그인 시각을 localStorage에 직접 기록해두고(ADMIN_LOGIN_AT_KEY),
+// 24시간이 지났으면 우리 쪽에서 강제로 로그아웃시킨다.
+export const ADMIN_LOGIN_AT_KEY = 'gs_admin_login_at'
+const ADMIN_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000 // 24시간
+
+// loginAtMs가 null이면(이 기능이 생기기 전에 로그인한 세션 등) 안전하게 "만료됨"으로 취급한다.
+export function isAdminSessionExpired(loginAtMs: number | null, now: Date = new Date()): boolean {
+  if (loginAtMs === null) return true
+  return now.getTime() - loginAtMs > ADMIN_SESSION_MAX_AGE_MS
+}
+
+function readAdminLoginAt(): number | null {
+  const stored = localStorage.getItem(ADMIN_LOGIN_AT_KEY)
+  return stored ? Number(stored) : null
+}
+
 export function sumTodayGeminiCalls(
   runs: { started_at: string; gemini_calls: number | null }[],
   now: Date = new Date(),
@@ -117,9 +135,14 @@ function AdminApp() {
 
   // 최초 마운트 시 기존 로그인 세션이 있는지 확인하고, 이후 로그인/로그아웃/토큰 갱신 등
   // 인증 상태가 바뀔 때마다 session을 갱신한다. onAuthStateChange 구독은 언마운트 시 해제한다.
+  // 세션이 남아있어도 로그인한 지 24시간이 지났으면(isAdminSessionExpired) 바로 로그아웃시킨다.
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session)
+      if (data.session && isAdminSessionExpired(readAdminLoginAt())) {
+        supabase.auth.signOut() // SIGNED_OUT 이벤트가 아래 구독에서 session을 null로 정리해준다.
+      } else {
+        setSession(data.session)
+      }
       setAuthLoading(false)
     })
 
@@ -129,6 +152,18 @@ function AdminApp() {
 
     return () => subscription.subscription.unsubscribe()
   }, [])
+
+  // 탭을 계속 열어둔 채로 24시간을 넘기는 경우를 잡기 위한 주기적 검사(1분마다).
+  // 위 마운트 시점 검사만으로는 "로그인해두고 탭을 며칠간 안 닫은" 상황을 못 잡는다.
+  useEffect(() => {
+    if (!session) return
+    const interval = setInterval(() => {
+      if (isAdminSessionExpired(readAdminLoginAt())) {
+        supabase.auth.signOut()
+      }
+    }, 60_000)
+    return () => clearInterval(interval)
+  }, [session])
 
   // run_log 최근 30건 조회. RLS 정책상 로그인한 사용자의 이메일이 관리자 본인일 때만 읽힌다
   // (schema.sql의 "admin can read run_log" 정책 참고) — 여기 실패하면 대개 다른 이메일로 로그인한 경우다.
@@ -281,11 +316,16 @@ function AdminApp() {
     setLoginError('')
     setLoggingIn(true)
     const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) setLoginError(error.message)
+    if (error) {
+      setLoginError(error.message)
+    } else {
+      localStorage.setItem(ADMIN_LOGIN_AT_KEY, Date.now().toString())
+    }
     setLoggingIn(false)
   }
 
   const handleLogout = async () => {
+    localStorage.removeItem(ADMIN_LOGIN_AT_KEY)
     await supabase.auth.signOut()
   }
 

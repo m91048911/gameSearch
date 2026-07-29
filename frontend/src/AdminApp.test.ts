@@ -8,7 +8,25 @@ import { describe, expect, it, vi } from 'vitest'
 // supabaseClient를 가짜로 대체해 import 시점의 부작용(createClient 호출)을 막는다.
 vi.mock('./supabaseClient', () => ({ supabase: {} }))
 
-const { pacificDateString, sumTodayGeminiCalls } = await import('./AdminApp')
+const { pacificDateString, sumTodayGeminiCalls, isAdminSessionExpired } = await import('./AdminApp')
+
+describe('isAdminSessionExpired', () => {
+  const now = new Date('2026-07-22T12:00:00Z')
+
+  it('로그인 기록이 없으면(null) 안전하게 만료된 것으로 취급한다', () => {
+    expect(isAdminSessionExpired(null, now)).toBe(true)
+  })
+
+  it('로그인한 지 24시간이 안 지났으면 아직 만료가 아니다', () => {
+    const loginAt = now.getTime() - 23 * 60 * 60 * 1000 // 23시간 전
+    expect(isAdminSessionExpired(loginAt, now)).toBe(false)
+  })
+
+  it('로그인한 지 24시간이 지났으면 만료다', () => {
+    const loginAt = now.getTime() - 25 * 60 * 60 * 1000 // 25시간 전
+    expect(isAdminSessionExpired(loginAt, now)).toBe(true)
+  })
+})
 
 describe('pacificDateString', () => {
   it('UTC 기준 자정을 넘겨도 태평양 시간으로는 아직 전날일 수 있다', () => {
