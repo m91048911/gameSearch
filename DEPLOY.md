@@ -2,7 +2,7 @@
 
 1GB RAM Oracle Cloud VM에 이 프로젝트를 올려서 아래 두 가지를 동시에 돌린다.
 
-- **cron**: `game_search.py`를 3일에 한 번 실행하는 배치 (자동 수집)
+- **cron**: `game_search.py`를 매일 실행하는 배치 (자동 수집, 한 번에 게임 전체가 아니라 GAMES_PER_RUN개씩만 순환 처리)
 - **systemd 서비스**: `admin_server.py`(FastAPI)를 상시 실행 → Tailscale Funnel로 외부에 노출 → Vercel 관리자 페이지의 "강제 업데이트" 버튼이 이 서버를 호출
 
 아래 명령의 `ubuntu`, `/home/ubuntu/gameSearch`는 Ubuntu 이미지 기준이다. Oracle Linux 이미지(`opc` 계정)라면 경로/유저를 그에 맞게 바꾼다.
@@ -31,18 +31,21 @@ uv pip install -r requirements.txt
 
 `uv`는 pip보다 빌드 캐시/메모리를 덜 쓰기 때문에 1GB RAM에서 `google-genai`/`supabase` 같은 무거운 의존성을 설치할 때 스왑으로 인한 실패를 줄여준다.
 
-## 3. cron 등록 (5일에 한 번 자동 수집)
+## 3. cron 등록 (매일 자동 수집, 게임은 GAMES_PER_RUN개씩 순환)
 
-Tavily 사용량(크레딧) 절감을 위해 주기를 3일 → 5일로 늘렸다. 게임 업데이트/픽업 일정은 보통 몇 주 단위라 5일 주기로도 충분히 따라잡을 수 있다.
+게임이 늘어나도 한 번 실행에 API를 호출하는 양이 그대로 유지되도록, "전체 게임을 며칠에 한 번" 대신
+"매일, 가장 오래 검색 안 한 게임 GAMES_PER_RUN개(기본 5개)만" 처리하는 방식으로 바꿨다. 게임이 늘어나면
+전체를 한 바퀴 도는 데 걸리는 일수만 자연스럽게 늘어난다(게임 5개=매일 전체 갱신, 15개=한 게임당 3일에 한 번꼴).
+필요하면 `.env`에 `GAMES_PER_RUN=10` 처럼 값을 조정할 수 있다.
 
 ```bash
 crontab -e
 ```
 
-아래 줄 추가 (5일마다 04:00 KST 실행, 서버 타임존이 UTC라면 맞춰서 시간 조정):
+아래 줄 추가 (매일 04:00 KST 실행, 서버 타임존이 UTC라면 맞춰서 시간 조정):
 
 ```
-0 4 */5 * * cd /home/ubuntu/gameSearch && /home/ubuntu/gameSearch/.venv/bin/python game_search.py >> /home/ubuntu/gameSearch/cron.log 2>&1
+0 4 * * * cd /home/ubuntu/gameSearch && /home/ubuntu/gameSearch/.venv/bin/python game_search.py >> /home/ubuntu/gameSearch/cron.log 2>&1
 ```
 
 ## 4. admin_server.py를 systemd 서비스로 등록 (상시 실행)

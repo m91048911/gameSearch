@@ -4,6 +4,10 @@
 
 alter table games add column if not exists official_domains text[];
 
+-- 게임이 늘어나도 한 번 실행에 처리하는 API 호출량이 늘어나지 않도록, 매번 전체가 아니라
+-- "가장 오래 검색 안 한" 게임 GAMES_PER_RUN개만 순환 처리한다 (game_search.py의 get_games() 참고).
+alter table games add column if not exists last_searched_at timestamptz;
+
 -- games는 RLS만 켜져 있고 정책이 없으면 anon key로는 아무것도 못 읽는다(기본 거부).
 -- 공개 캘린더(/api/games, anon key)와 관리자 페이지(로그인 세션)는 계속 읽을 수 있어야 하고,
 -- 쓰기(추가/수정/삭제)는 관리자 본인 로그인 세션에서만 가능해야 한다.

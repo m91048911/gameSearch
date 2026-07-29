@@ -338,3 +338,34 @@ def test_get_confirmed_future_topic_ids_parses_rows():
 
     assert result == {"character_pickup", "broadcast_schedule"}
     fake_client.table.assert_called_with("game_events")
+
+
+# ---- get_games / _touch_game_last_searched ---------------------------------
+# 게임이 늘어나도 실행당 API 호출량이 그대로 유지되도록, "가장 오래 검색 안 한 게임부터" 순서로
+# 돌려주고(get_games) 처리한 게임은 순번 맨 뒤로 보낸다(_touch_game_last_searched).
+
+
+def test_get_games_orders_by_last_searched_at_nullsfirst():
+    fake_client = MagicMock()
+    fake_client.table.return_value.select.return_value.order.return_value.execute.return_value.data = [
+        {"id": 1, "name_ko": "원신"},
+    ]
+
+    result = gs.get_games(fake_client)
+
+    assert result == [{"id": 1, "name_ko": "원신"}]
+    fake_client.table.assert_called_with("games")
+    fake_client.table.return_value.select.return_value.order.assert_called_with(
+        "last_searched_at", nullsfirst=True
+    )
+
+
+def test_touch_game_last_searched_updates_that_game_only():
+    fake_client = MagicMock()
+
+    gs._touch_game_last_searched(fake_client, game_id=42)
+
+    fake_client.table.assert_called_with("games")
+    update_call = fake_client.table.return_value.update.call_args[0][0]
+    assert "last_searched_at" in update_call
+    fake_client.table.return_value.update.return_value.eq.assert_called_with("id", 42)

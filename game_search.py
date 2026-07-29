@@ -58,6 +58,12 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 # 추출 정확도(특히 날짜/제목 필드)를 한동안 지켜볼 필요는 있다.
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+# 한 번 실행(cron 1회)에 검색할 게임 수. 게임이 늘어나도 Tavily/Gemini 하루 사용량이 무한정
+# 늘어나지 않도록, 매번 전체 게임이 아니라 "가장 오래 검색 안 한" 게임 N개만 처리하고 순환시킨다
+# (get_games()가 last_searched_at 오름차순으로 정렬해서 돌려준다). 게임이 늘어나면 그만큼
+# 한 바퀴 도는 데 걸리는 일수만 늘어날 뿐, 하루/한 번 실행당 API 호출량은 그대로 유지된다.
+GAMES_PER_RUN = int(os.getenv("GAMES_PER_RUN", "5"))
+
 # Supabase topics 테이블이 없거나 비어있을 때 쓰는 기본값 (CLI 테스트 모드 등)
 # search_depth: Tavily 크레딧 절감용. 공식 홈페이지에 명확히 공지되는 주제는 'basic'으로 충분하고,
 # 찾기 까다로운 공식방송 일정만 'advanced'를 쓴다 (schema.sql의 topics.search_depth와 동일한 기준).
@@ -96,9 +102,25 @@ def get_supabase_client():
 
 def get_games(client):
     """Supabase games 테이블에서 (id, name_en, name_ko, official_domains) 목록을 가져온다.
-    official_domains가 있으면 Tavily 검색을 그 도메인으로만 제한해 공식 정보만 가져온다."""
-    res = client.table("games").select("id,name_en,name_ko,official_domains").execute()
+    official_domains가 있으면 Tavily 검색을 그 도메인으로만 제한해 공식 정보만 가져온다.
+    last_searched_at 오름차순(한 번도 검색 안 한 게임이 맨 앞)으로 정렬해서 돌려준다 — 호출하는 쪽
+    (run_all_games)이 앞에서부터 GAMES_PER_RUN개만 잘라 쓰면 자연스럽게 순환 처리가 된다."""
+    res = (
+        client.table("games")
+        .select("id,name_en,name_ko,official_domains,last_searched_at")
+        .order("last_searched_at", nullsfirst=True)
+        .execute()
+    )
     return res.data
+
+
+def _touch_game_last_searched(client, game_id):
+    """이번 실행에서 이 게임 차례가 지나갔음을 기록한다 (성공/실패/스킵 여부와 무관하게 호출).
+    실패하는 게임이 last_searched_at을 안 갱신하면 매번 맨 앞 순번을 차지해 다른 게임들이
+    영영 차례가 안 오는 상황이 생기므로, 결과와 상관없이 항상 갱신한다."""
+    client.table("games").update({"last_searched_at": datetime.now(timezone.utc).isoformat()}).eq(
+        "id", game_id
+    ).execute()
 
 
 def get_topics(client):
@@ -492,10 +514,14 @@ def run_all_games(trigger_source: str = "cron") -> dict:
         tavily = TavilyClient(api_key=TAVILY_API_KEY)
         gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-        games = get_games(supabase)
+        all_games = get_games(supabase)
+        games = all_games[:GAMES_PER_RUN]
         topics = get_topics(supabase)
         log(f"검색 주제 {len(topics)}개: {[t['id'] for t in topics]}")
-        log(f"{len(games)}개 게임 처리 시작 (trigger={trigger_source})")
+        log(
+            f"등록된 게임 {len(all_games)}개 중 {len(games)}개 처리 시작 (trigger={trigger_source}, "
+            f"가장 오래 검색 안 한 게임부터 GAMES_PER_RUN={GAMES_PER_RUN}개씩 순환)"
+        )
 
         processed = 0
         errors = []
@@ -503,6 +529,10 @@ def run_all_games(trigger_source: str = "cron") -> dict:
             game_name = game.get("name_ko") or game.get("name_en")
             game_id = game.get("id")
             official_domains = game.get("official_domains") or None
+
+            # 성공/실패/스킵과 무관하게 항상 갱신 — 그래야 다음 실행 때 이 게임이 순번 맨 뒤로 밀려서
+            # 다른 게임들도 골고루 차례가 돌아온다.
+            _touch_game_last_searched(supabase, game_id)
 
             # Tavily 사용량 절감: 이미 검증된 미래 일정이 있는 주제는 이번 실행에서 재검색하지 않는다.
             confirmed_topic_ids = get_confirmed_future_topic_ids(supabase, game_id)
