@@ -421,11 +421,11 @@ function App() {
             </div>
             <div>
               <span>오늘 일정</span>
-              <strong>{todayItems.length}건</strong>
+              <strong>{todayItems.length}</strong>
             </div>
             <div>
               <span>다음 일정</span>
-              <strong>{upcoming?.title ?? '예정 없음'}</strong>
+              <strong>{upcoming ? `${upcoming.game} · ${upcoming.title}` : '예정 없음'}</strong>
             </div>
           </div>
         </section>
