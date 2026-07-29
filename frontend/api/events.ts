@@ -1,8 +1,12 @@
 // GET /api/events
 //
 // 공개 캘린더가 호출하는 캐시된 엔드포인트. Supabase game_events를 서버에서 대신 조회해
-// s-maxage로 하루 동안 Vercel Edge 캐시에 태워 보낸다 — 방문자가 몰려도
-// Supabase 무료 티어의 API 호출/egress를 프론트 트래픽만큼 그대로 소모하지 않게 하기 위함.
+// s-maxage 동안 Vercel Edge 캐시에 태워 보낸다 — 방문자가 몰려도 Supabase 무료 티어의
+// API 호출/egress를 프론트 트래픽만큼 그대로 소모하지 않게 하기 위함.
+//
+// 관리자 페이지에서 일정을 추가/삭제해도 이 캐시가 살아있는 동안은 공개 캘린더에 반영되지
+// 않는다(실제로 겪은 문제: 삭제한 일정이 한참 더 보였음). 캐시를 아예 없애면 egress를 다시
+// 트래픽만큼 소모하니, 5분으로 짧게 잡아 "거의 실시간"과 "캐시 효과" 사이를 절충한다.
 //
 // 수집(game_search.py)은 그대로 두고, 화면에 내려주는 범위만 "이번 달 기준 앞뒤 한 달"로 제한한다.
 // 즉 지난달 1일 ~ 다음달 말일 사이의 일정만 반환한다 (너무 오래된 과거/너무 먼 미래는 굳이 안 보내도 됨).
@@ -55,6 +59,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // stale-while-revalidate: 캐시가 만료돼도 재검증하는 동안은 지난 응답을 그대로 보여준다.
-  res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate')
+  res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate')
   res.status(200).json({ events: data ?? [] })
 }
