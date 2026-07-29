@@ -68,7 +68,7 @@ type GameOption = {
   label: string
 }
 
-type ManualEventRow = {
+type EventRow = {
   id: number
   event_date: string
   title: string
@@ -76,6 +76,7 @@ type ManualEventRow = {
   genre: string | null
   note: string | null
   source_url: string | null
+  source: string
 }
 
 // App.tsx의 CATEGORY_LABELS/CATEGORY_ORDER와 같은 값. 캘린더 카테고리가 이 4개로 고정돼 있어
@@ -117,11 +118,12 @@ function AdminApp() {
   const [usageError, setUsageError] = useState('')
   const [usageLoading, setUsageLoading] = useState(false)
 
-  // "일정 직접 추가" 패널 상태: 게임 드롭다운 목록 + 지금까지 수동으로 추가한 일정(source='manual') 목록
+  // "일정 관리" 패널 상태: 게임 드롭다운 목록 + 일정 목록(자동 검색 + 수동 추가 전부, 게임으로 필터 가능)
   const [games, setGames] = useState<GameOption[]>([])
-  const [manualEvents, setManualEvents] = useState<ManualEventRow[]>([])
-  const [manualEventsError, setManualEventsError] = useState('')
-  const [manualEventsLoading, setManualEventsLoading] = useState(false)
+  const [events, setEvents] = useState<EventRow[]>([])
+  const [eventsError, setEventsError] = useState('')
+  const [eventsLoading, setEventsLoading] = useState(false)
+  const [eventFilterGameId, setEventFilterGameId] = useState('')
 
   // "일정 직접 추가" 폼 입력값들
   const [formGameId, setFormGameId] = useState('')
@@ -196,24 +198,29 @@ function AdminApp() {
     }
   }
 
-  // source='manual'인 행만 조회한다 — 자동 검색(source='search')이 채운 일정과 구분해서
-  // "직접 추가한 일정" 목록에는 관리자가 손으로 넣은 것만 보이게 한다.
-  const loadManualEvents = async () => {
-    setManualEventsLoading(true)
-    setManualEventsError('')
+  // 자동 검색(source='search')과 수동 추가(source='manual') 일정을 모두 조회한다 — 오검색되거나
+  // 중복 저장된 자동 일정도 관리자가 여기서 직접 지울 수 있어야 하기 때문이다(RLS 정책도 source를
+  // 구분하지 않고 관리자 이메일이면 전부 삭제 가능하게 돼 있다). 게임이 늘어나며 행이 계속 쌓이니
+  // 최근 200건 + 게임 필터로 범위를 좁힌다.
+  const loadEvents = async (gameId: string) => {
+    setEventsLoading(true)
+    setEventsError('')
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('game_events')
-      .select('id, event_date, title, category, genre, note, source_url')
-      .eq('source', 'manual')
+      .select('id, event_date, title, category, genre, note, source_url, source')
       .order('event_date', { ascending: false })
+      .limit(200)
+    if (gameId) query = query.eq('game_id', Number(gameId))
+
+    const { data, error } = await query
 
     if (error) {
-      setManualEventsError(error.message)
+      setEventsError(error.message)
     } else {
-      setManualEvents((data ?? []) as ManualEventRow[])
+      setEvents((data ?? []) as EventRow[])
     }
-    setManualEventsLoading(false)
+    setEventsLoading(false)
   }
 
   // Tavily 사용량 조회. trigger-run.ts와 같은 패턴 — 로그인 세션의 access_token을 실어
@@ -250,7 +257,7 @@ function AdminApp() {
     if (session) {
       loadRuns()
       loadGames()
-      loadManualEvents()
+      loadEvents('')
       loadUsage()
     }
   }, [session])
@@ -295,19 +302,22 @@ function AdminApp() {
       setFormTitle('')
       setFormNote('')
       setFormSourceUrl('')
-      loadManualEvents()
+      loadEvents(eventFilterGameId)
     }
     setAdding(false)
   }
 
   // 서버 응답을 다시 조회하지 않고 로컬 상태에서 바로 제거한다 — 삭제 직후 목록이
   // 지연 없이 갱신되는 것처럼 보이게 하기 위함 (낙관적 업데이트에 가까운 처리).
-  const handleDeleteManualEvent = async (id: number) => {
+  // source가 'search'든 'manual'이든 상관없이 지울 수 있다 — 오검색이나 중복 저장된
+  // 자동 일정도 관리자가 직접 지울 수 있어야 하기 때문.
+  const handleDeleteEvent = async (id: number) => {
+    if (!window.confirm('이 일정을 삭제할까요?')) return
     const { error } = await supabase.from('game_events').delete().eq('id', id)
     if (error) {
-      setManualEventsError(error.message)
+      setEventsError(error.message)
     } else {
-      setManualEvents((prev) => prev.filter((e) => e.id !== id))
+      setEvents((prev) => prev.filter((e) => e.id !== id))
     }
   }
 
@@ -468,14 +478,15 @@ function AdminApp() {
         </div>
       </section>
 
-      {/* 패널 2: 일정 직접 추가 — 자동 검색이 놓친 일정을 수동 등록 + 지금까지 추가한 목록/삭제 */}
+      {/* 패널 2: 일정 관리 — 직접 추가 + 자동/수동 전체 일정 조회 및 삭제(오검색·중복 정리용) */}
       <section className="admin-panel">
         <div className="admin-panel-header">
-          <h3>일정 직접 추가</h3>
+          <h3>일정 관리</h3>
         </div>
         <p className="admin-panel-desc">
           검색으로 찾지 못했거나 급하게 추가해야 하는 일정을 직접 등록합니다. 여기서 추가한 일정은
-          자동 검색이 다시 실행돼도 지워지지 않습니다.
+          자동 검색이 다시 실행돼도 지워지지 않습니다. 아래 목록에서는 자동 검색으로 들어온 일정도
+          잘못됐거나 중복이면 바로 삭제할 수 있습니다.
         </p>
         <form className="admin-form" onSubmit={handleAddEvent}>
           <label>
@@ -538,10 +549,33 @@ function AdminApp() {
         </form>
         {addMessage && <p className="status-message">{addMessage}</p>}
 
-        {manualEventsError && <p className="status-message status-error">{manualEventsError}</p>}
-        {manualEventsLoading && <p className="status-message">불러오는 중...</p>}
+        <div className="admin-panel-header">
+          <label>
+            게임으로 필터
+            <select
+              value={eventFilterGameId}
+              onChange={(event) => {
+                setEventFilterGameId(event.target.value)
+                loadEvents(event.target.value)
+              }}
+            >
+              <option value="">전체</option>
+              {games.map((game) => (
+                <option key={game.id} value={game.id}>
+                  {game.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" onClick={() => loadEvents(eventFilterGameId)} disabled={eventsLoading}>
+            새로고침
+          </button>
+        </div>
 
-        {manualEvents.length > 0 && (
+        {eventsError && <p className="status-message status-error">{eventsError}</p>}
+        {eventsLoading && <p className="status-message">불러오는 중...</p>}
+
+        {events.length > 0 && (
           <table className="admin-table">
             <thead>
               <tr>
@@ -549,18 +583,20 @@ function AdminApp() {
                 <th>게임</th>
                 <th>카테고리</th>
                 <th>제목</th>
+                <th>출처</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {manualEvents.map((item) => (
+              {events.map((item) => (
                 <tr key={item.id}>
                   <td>{item.event_date}</td>
                   <td>{item.genre ?? '-'}</td>
                   <td>{CATEGORY_OPTIONS.find((c) => c.value === item.category)?.label ?? item.category}</td>
                   <td>{item.title}</td>
+                  <td>{item.source === 'manual' ? '수동' : '자동'}</td>
                   <td>
-                    <button type="button" className="admin-table-delete" onClick={() => handleDeleteManualEvent(item.id)}>
+                    <button type="button" className="admin-table-delete" onClick={() => handleDeleteEvent(item.id)}>
                       삭제
                     </button>
                   </td>
@@ -570,8 +606,8 @@ function AdminApp() {
           </table>
         )}
 
-        {!manualEventsLoading && manualEvents.length === 0 && !manualEventsError && (
-          <p className="status-message">직접 추가한 일정이 없습니다.</p>
+        {!eventsLoading && events.length === 0 && !eventsError && (
+          <p className="status-message">일정이 없습니다.</p>
         )}
       </section>
 
