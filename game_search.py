@@ -177,6 +177,13 @@ def save_events(client, game_id, game_name: str, topic: dict, events: list):
     캘린더의 이력으로 남아야 하는데, 재검색은 보통 "다가오는" 일정 위주라 지난 일정을 다시 찾아내지
     못하는 경우가 흔하다. 예전에는 지운 뒤 못 채우면 그대로 사라졌었다(실제 운영 중 발견된 버그).
 
+    그런데 과거 이벤트를 안 지우기 시작하면서 새로운 문제가 생겼다: 이미 지나간 이벤트를 재검색이
+    다시 찾아내면(같은 공지를 Gemini가 제목만 살짝 다르게 재추출하는 경우가 흔함) delete 대상이
+    아니니 그대로 둔 채 또 insert돼서 같은 이벤트가 중복 저장된다(실제 운영 중 발견된 버그).
+    그래서 (event_date, source_url)이 이미 저장돼 있는 이벤트는 제목이 달라도 새로 넣지 않는다 —
+    source_url은 Gemini가 제목을 어떻게 다르게 쓰든 항상 같은 원본 공지를 가리키므로, 제목보다
+    신뢰할 수 있는 "같은 이벤트인지" 판별 기준이다.
+
     source='manual'인 행(관리자 페이지에서 직접 추가한 일정)은 이 함수가 절대 건드리지 않는다."""
     if game_id is None:
         return  # CLI 테스트 모드(DB에 없는 게임)에서는 저장하지 않음
@@ -205,8 +212,22 @@ def save_events(client, game_id, game_name: str, topic: dict, events: list):
         for e in events
         if e.get("title") and _valid_iso_date(e.get("date"))
     ]
-    if rows:
-        client.table("game_events").insert(rows).execute()
+    if not rows:
+        return
+
+    existing = (
+        client.table("game_events")
+        .select("event_date,source_url")
+        .eq("game_id", game_id)
+        .eq("topic_id", topic_id)
+        .eq("source", "search")
+        .execute()
+    )
+    existing_keys = {(r["event_date"], r["source_url"]) for r in (existing.data or [])}
+
+    new_rows = [r for r in rows if (r["event_date"], r["source_url"]) not in existing_keys]
+    if new_rows:
+        client.table("game_events").insert(new_rows).execute()
 
 
 def search_topic(

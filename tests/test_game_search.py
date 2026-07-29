@@ -294,8 +294,14 @@ def test_save_events_delete_targets_only_todays_or_future_events(monkeypatch):
     delete_chain.eq.return_value.eq.return_value.eq.return_value.gte.assert_any_call("event_date", "2026-07-24")
 
 
+def _set_existing_events(fake_client, rows):
+    """save_events()의 중복 체크 select 체인이 반환할 기존 행 목록을 설정하는 헬퍼."""
+    fake_client.table.return_value.select.return_value.eq.return_value.eq.return_value.eq.return_value.execute.return_value.data = rows
+
+
 def test_save_events_inserts_only_rows_with_valid_title_and_date():
     fake_client = MagicMock()
+    _set_existing_events(fake_client, [])
     topic = {"id": "version_update", "calendar_category": "update"}
     events = [
         {"date": "2026-08-01", "title": "6.4 버전 업데이트", "source_url": "https://x"},
@@ -314,11 +320,49 @@ def test_save_events_inserts_only_rows_with_valid_title_and_date():
 
 def test_save_events_skips_insert_when_no_valid_rows():
     fake_client = MagicMock()
-    topic = {"id": "version_update", "calendar_category": "update"}
 
-    gs.save_events(fake_client, 1, "원신", topic, [{"date": "bad", "title": "x"}])
+    gs.save_events(fake_client, 1, "원신", {"id": "version_update", "calendar_category": "update"}, [{"date": "bad", "title": "x"}])
 
     fake_client.table.return_value.insert.assert_not_called()
+
+
+# 실제 운영 중 발견된 버그: 과거로 넘어간 이벤트는 delete 대상에서 빠지는데, 재검색이 같은 이벤트를
+# 제목만 다르게(Gemini 비결정성) 다시 찾아내면 그대로 또 insert돼서 중복 행이 쌓였다.
+# (event_date, source_url)이 이미 저장돼 있으면 제목이 달라도 다시 넣지 않는다.
+
+
+def test_save_events_skips_event_already_saved_with_same_date_and_source_url():
+    fake_client = MagicMock()
+    _set_existing_events(
+        fake_client,
+        [{"event_date": "2026-07-21", "source_url": "https://genshin.hoyoverse.com/m/ko/news"}],
+    )
+    topic = {"id": "character_pickup", "calendar_category": "pickup"}
+    events = [
+        {"date": "2026-07-21", "title": "라이덴 쇼군 픽업 오픈", "source_url": "https://genshin.hoyoverse.com/m/ko/news"},
+    ]
+
+    gs.save_events(fake_client, 1, "원신", topic, events)
+
+    fake_client.table.return_value.insert.assert_not_called()
+
+
+def test_save_events_still_inserts_different_source_url_on_same_date():
+    fake_client = MagicMock()
+    _set_existing_events(
+        fake_client,
+        [{"event_date": "2026-07-21", "source_url": "https://genshin.hoyoverse.com/m/ko/news"}],
+    )
+    topic = {"id": "character_pickup", "calendar_category": "pickup"}
+    events = [
+        {"date": "2026-07-21", "title": "여덟 번째 달 픽업 종료", "source_url": "https://genshin.hoyoverse.com/m/ko/news/detail/123"},
+    ]
+
+    gs.save_events(fake_client, 1, "원신", topic, events)
+
+    inserted = fake_client.table.return_value.insert.call_args[0][0]
+    assert len(inserted) == 1
+    assert inserted[0]["title"] == "여덟 번째 달 픽업 종료"
 
 
 # ---- get_confirmed_future_topic_ids ---------------------------------------
