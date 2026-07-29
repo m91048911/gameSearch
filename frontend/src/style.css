@@ -253,6 +253,15 @@ a {
   color: var(--text-subtle);
 }
 
+.hero-disclaimer {
+  margin-top: 8px;
+  max-width: 620px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-subtle);
+  opacity: 0.8;
+}
+
 .hero-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 1fr));
