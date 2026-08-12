@@ -35,6 +35,11 @@ export function pacificDateString(date: Date): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(date)
 }
 
+// "오늘 업데이트된 게임" 표시용 — 관리자가 한국에서 보는 화면이니 한국 시간 기준 날짜로 비교한다.
+export function koreaDateString(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(date)
+}
+
 // Supabase 세션(리프레시 토큰)은 기본적으로 만료 기한이 없어서, 탭을 오래 열어두면 로그인이
 // 무한정 유지된다. Supabase의 공식 세션 만료(Time-box) 설정은 Pro 플랜부터 지원되는데 이 프로젝트는
 // 무료 플랜이라 못 쓴다. 그래서 로그인 시각을 localStorage에 직접 기록해두고(ADMIN_LOGIN_AT_KEY),
@@ -66,6 +71,7 @@ export function sumTodayGeminiCalls(
 type GameOption = {
   id: number
   label: string
+  lastSearchedAt: string | null
 }
 
 type EventRow = {
@@ -91,6 +97,28 @@ const CATEGORY_OPTIONS: { value: string; label: string }[] = [
 function formatDateTime(value: string | null): string {
   if (!value) return '-'
   return new Date(value).toLocaleString('ko-KR')
+}
+
+// 일정 목록의 "월 선택" 필터용. HTML <input type="month">이 주고받는 형식 그대로(YYYY-MM) 다룬다.
+export function currentMonthString(date: Date = new Date()): string {
+  return koreaDateString(date).slice(0, 7)
+}
+
+// 'YYYY-MM' -> 그 달의 첫날/마지막날 (event_date 컬럼과 문자열로 비교하기 위한 'YYYY-MM-DD').
+export function monthRange(month: string): { start: string; end: string } {
+  const [year, m] = month.split('-').map(Number)
+  const lastDay = new Date(year, m, 0).getDate() // m은 1~12 → new Date(y, m, 0)은 그 달의 마지막 날
+  return { start: `${month}-01`, end: `${month}-${String(lastDay).padStart(2, '0')}` }
+}
+
+// "오늘 업데이트된 게임" 판정. games.last_searched_at은 크론/수동 실행이 그 게임을 처리할 때마다
+// (성공/실패/스킵 관계없이) 갱신되므로, 한국 날짜 기준 오늘과 같은 게임을 찾으면 된다.
+export function gamesUpdatedTodayList(
+  games: { label: string; lastSearchedAt: string | null }[],
+  now: Date = new Date(),
+): string[] {
+  const today = koreaDateString(now)
+  return games.filter((g) => g.lastSearchedAt && koreaDateString(new Date(g.lastSearchedAt)) === today).map((g) => g.label)
 }
 
 function AdminApp() {
@@ -124,6 +152,7 @@ function AdminApp() {
   const [eventsError, setEventsError] = useState('')
   const [eventsLoading, setEventsLoading] = useState(false)
   const [eventFilterGameId, setEventFilterGameId] = useState('')
+  const [eventMonth, setEventMonth] = useState(() => currentMonthString())
 
   // "일정 직접 추가" 폼 입력값들
   const [formGameId, setFormGameId] = useState('')
@@ -190,27 +219,33 @@ function AdminApp() {
   // "일정 직접 추가" 폼의 게임 드롭다운용. 공개 캘린더(App.tsx)와 달리 여기는 로그인 세션으로
   // 직접 games 테이블을 조회한다(관리자 전용 화면이라 /api/games 캐시를 거칠 필요가 없음).
   const loadGames = async () => {
-    const { data, error } = await supabase.from('games').select('id, name_ko, name_en').order('id')
+    const { data, error } = await supabase.from('games').select('id, name_ko, name_en, last_searched_at').order('id')
     if (!error) {
       setGames(
-        (data ?? []).map((g) => ({ id: g.id as number, label: (g.name_ko ?? g.name_en ?? `#${g.id}`) as string })),
+        (data ?? []).map((g) => ({
+          id: g.id as number,
+          label: (g.name_ko ?? g.name_en ?? `#${g.id}`) as string,
+          lastSearchedAt: g.last_searched_at as string | null,
+        })),
       )
     }
   }
 
   // 자동 검색(source='search')과 수동 추가(source='manual') 일정을 모두 조회한다 — 오검색되거나
   // 중복 저장된 자동 일정도 관리자가 여기서 직접 지울 수 있어야 하기 때문이다(RLS 정책도 source를
-  // 구분하지 않고 관리자 이메일이면 전부 삭제 가능하게 돼 있다). 게임이 늘어나며 행이 계속 쌓이니
-  // 최근 200건 + 게임 필터로 범위를 좁힌다.
-  const loadEvents = async (gameId: string) => {
+  // 구분하지 않고 관리자 이메일이면 전부 삭제 가능하게 돼 있다). 게임이 늘어날수록 전체를 한 번에
+  // 보여주면 표가 한없이 길어지므로, 월 단위(+ 게임 필터)로 범위를 좁힌다.
+  const loadEvents = async (gameId: string, month: string) => {
     setEventsLoading(true)
     setEventsError('')
 
+    const { start, end } = monthRange(month)
     let query = supabase
       .from('game_events')
       .select('id, event_date, title, category, genre, note, source_url, source')
-      .order('event_date', { ascending: false })
-      .limit(200)
+      .gte('event_date', start)
+      .lte('event_date', end)
+      .order('event_date', { ascending: true })
     if (gameId) query = query.eq('game_id', Number(gameId))
 
     const { data, error } = await query
@@ -257,7 +292,7 @@ function AdminApp() {
     if (session) {
       loadRuns()
       loadGames()
-      loadEvents('')
+      loadEvents('', eventMonth)
       loadUsage()
     }
   }, [session])
@@ -265,6 +300,9 @@ function AdminApp() {
   // Gemini는 공식 사용량 API가 없어서, 이미 불러온 run_log(runs)에서 태평양 시간 기준
   // "오늘" 실행분의 gemini_calls만 더해 근사치를 낸다. runs가 바뀔 때만 다시 계산한다.
   const todayGeminiCalls = useMemo(() => sumTodayGeminiCalls(runs), [runs])
+
+  // "오늘 업데이트된 게임" 목록. 순수 함수(gamesUpdatedTodayList)로 빼서 별도 테스트한다.
+  const gamesUpdatedToday = useMemo(() => gamesUpdatedTodayList(games), [games])
 
   // "일정 직접 추가" 폼 제출. verified=true/confidence='high'로 고정해서 저장하는데, 관리자가
   // 직접 확인하고 넣는 정보라 자동 검색 결과처럼 별도 검증이 필요 없기 때문이다.
@@ -302,7 +340,7 @@ function AdminApp() {
       setFormTitle('')
       setFormNote('')
       setFormSourceUrl('')
-      loadEvents(eventFilterGameId)
+      loadEvents(eventFilterGameId, eventMonth)
     }
     setAdding(false)
   }
@@ -440,6 +478,9 @@ function AdminApp() {
           </button>
         </div>
         {triggerMessage && <p className="status-message">{triggerMessage}</p>}
+        <p className="status-message">
+          오늘 업데이트된 게임: {gamesUpdatedToday.length > 0 ? gamesUpdatedToday.join(', ') : '아직 없음'}
+        </p>
       </section>
 
       {/* 패널 1.5: API 사용량 — Tavily는 공식 /usage 응답, Gemini는 우리가 직접 센 근사치 */}
@@ -551,12 +592,23 @@ function AdminApp() {
 
         <div className="admin-panel-header">
           <label>
+            월 선택
+            <input
+              type="month"
+              value={eventMonth}
+              onChange={(event) => {
+                setEventMonth(event.target.value)
+                loadEvents(eventFilterGameId, event.target.value)
+              }}
+            />
+          </label>
+          <label>
             게임으로 필터
             <select
               value={eventFilterGameId}
               onChange={(event) => {
                 setEventFilterGameId(event.target.value)
-                loadEvents(event.target.value)
+                loadEvents(event.target.value, eventMonth)
               }}
             >
               <option value="">전체</option>
@@ -567,7 +619,7 @@ function AdminApp() {
               ))}
             </select>
           </label>
-          <button type="button" onClick={() => loadEvents(eventFilterGameId)} disabled={eventsLoading}>
+          <button type="button" onClick={() => loadEvents(eventFilterGameId, eventMonth)} disabled={eventsLoading}>
             새로고침
           </button>
         </div>

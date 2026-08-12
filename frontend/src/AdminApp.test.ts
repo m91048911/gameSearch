@@ -8,7 +8,15 @@ import { describe, expect, it, vi } from 'vitest'
 // supabaseClient를 가짜로 대체해 import 시점의 부작용(createClient 호출)을 막는다.
 vi.mock('./supabaseClient', () => ({ supabase: {} }))
 
-const { pacificDateString, sumTodayGeminiCalls, isAdminSessionExpired } = await import('./AdminApp')
+const {
+  pacificDateString,
+  sumTodayGeminiCalls,
+  isAdminSessionExpired,
+  koreaDateString,
+  currentMonthString,
+  monthRange,
+  gamesUpdatedTodayList,
+} = await import('./AdminApp')
 
 describe('isAdminSessionExpired', () => {
   const now = new Date('2026-07-22T12:00:00Z')
@@ -69,5 +77,41 @@ describe('sumTodayGeminiCalls', () => {
 
   it('실행 이력이 없으면 0을 반환한다', () => {
     expect(sumTodayGeminiCalls([], now)).toBe(0)
+  })
+})
+
+describe('koreaDateString', () => {
+  it('UTC로 자정을 넘기기 전이어도 한국 시간(UTC+9)으로는 이미 다음 날일 수 있다', () => {
+    // 2026-07-21T15:30:00Z = 한국시간 22일 00:30
+    const utc = new Date('2026-07-21T15:30:00Z')
+    expect(koreaDateString(utc)).toBe('2026-07-22')
+  })
+})
+
+describe('currentMonthString / monthRange', () => {
+  it('currentMonthString은 YYYY-MM만 반환한다', () => {
+    expect(currentMonthString(new Date('2026-07-21T15:30:00Z'))).toBe('2026-07')
+  })
+
+  it('monthRange는 그 달의 1일과 마지막 날을 반환한다', () => {
+    expect(monthRange('2026-02')).toEqual({ start: '2026-02-01', end: '2026-02-28' }) // 평년 2월
+    expect(monthRange('2026-07')).toEqual({ start: '2026-07-01', end: '2026-07-31' })
+  })
+})
+
+describe('gamesUpdatedTodayList', () => {
+  const now = new Date('2026-07-22T05:00:00Z') // 한국시간 22일 14시
+
+  it('한국 날짜 기준 오늘 last_searched_at인 게임만 이름을 돌려준다', () => {
+    const games = [
+      { label: '원신', lastSearchedAt: '2026-07-22T02:00:00Z' }, // 한국시간 22일
+      { label: '니케', lastSearchedAt: '2026-07-20T02:00:00Z' }, // 한국시간 20일 → 제외
+      { label: '명조', lastSearchedAt: null }, // 아직 한 번도 검색 안 됨 → 제외
+    ]
+    expect(gamesUpdatedTodayList(games, now)).toEqual(['원신'])
+  })
+
+  it('오늘 업데이트된 게임이 없으면 빈 배열을 반환한다', () => {
+    expect(gamesUpdatedTodayList([{ label: '원신', lastSearchedAt: null }], now)).toEqual([])
   })
 })
