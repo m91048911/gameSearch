@@ -94,6 +94,18 @@ const CATEGORY_OPTIONS: { value: string; label: string }[] = [
   { value: 'launch', label: '신작출시' },
 ]
 
+// 관리자 페이지 좌측 메뉴. 패널이 늘어나면서 한 페이지에 전부 세로로 나열하면 너무 길어져,
+// 메뉴로 골라서 하나씩만 보도록 나눴다. 데이터 로딩(loadRuns/loadGames/loadEvents/loadUsage)은
+// 그대로 로그인 시점에 한 번에 해두고(4.4/4.5 참고), 메뉴 전환은 어떤 패널을 보여줄지만 바꾼다.
+type AdminSectionId = 'trigger' | 'usage' | 'events' | 'runs'
+
+const ADMIN_SECTIONS: { id: AdminSectionId; label: string }[] = [
+  { id: 'trigger', label: '강제 업데이트' },
+  { id: 'usage', label: 'API 사용량' },
+  { id: 'events', label: '일정 관리' },
+  { id: 'runs', label: '실행 이력' },
+]
+
 function formatDateTime(value: string | null): string {
   if (!value) return '-'
   return new Date(value).toLocaleString('ko-KR')
@@ -125,6 +137,9 @@ function AdminApp() {
   // 로그인 세션. null이면 로그인 폼을, 있으면 관리자 대시보드를 보여준다 (아래 return 문에서 분기).
   const [session, setSession] = useState<Session | null>(null)
   const [authLoading, setAuthLoading] = useState(true) // 최초 세션 확인이 끝나기 전까지 깜빡임 방지용
+
+  // 좌측 메뉴에서 선택된 패널
+  const [activeSection, setActiveSection] = useState<AdminSectionId>('trigger')
 
   // 로그인 폼 상태
   const [email, setEmail] = useState('')
@@ -469,256 +484,281 @@ function AdminApp() {
         </button>
       </header>
 
-      {/* 패널 1: 강제 업데이트 (수동 트리거) */}
-      <section className="admin-panel">
-        <div className="admin-panel-header">
-          <h3>강제 업데이트</h3>
-          <button type="button" onClick={handleTrigger} disabled={triggering}>
-            {triggering ? '실행 요청 중...' : '지금 검색 실행'}
-          </button>
-        </div>
-        {triggerMessage && <p className="status-message">{triggerMessage}</p>}
-        <p className="status-message">
-          오늘 업데이트된 게임: {gamesUpdatedToday.length > 0 ? gamesUpdatedToday.join(', ') : '아직 없음'}
-        </p>
-      </section>
-
-      {/* 패널 1.5: API 사용량 — Tavily는 공식 /usage 응답, Gemini는 우리가 직접 센 근사치 */}
-      <section className="admin-panel">
-        <div className="admin-panel-header">
-          <h3>API 사용량</h3>
-          <button type="button" onClick={loadUsage} disabled={usageLoading}>
-            새로고침
-          </button>
-        </div>
-        {usageError && <p className="status-message status-error">{usageError}</p>}
-        {usageLoading && <p className="status-message">불러오는 중...</p>}
-
-        <div className="admin-usage-cards">
-          <div className="admin-usage-card">
-            <p className="admin-usage-label">Tavily (이번 결제 주기)</p>
-            {usage?.key ? (
-              <p className="admin-usage-value">
-                {usage.key.usage ?? '-'} / {usage.key.limit ?? '무제한'} 크레딧
-              </p>
-            ) : (
-              !usageLoading && <p className="admin-usage-value">-</p>
-            )}
-            {usage?.account?.current_plan && (
-              <p className="admin-usage-sub">
-                플랜: {usage.account.current_plan} ({usage.account.plan_usage ?? '-'} / {usage.account.plan_limit ?? '-'})
-              </p>
-            )}
-          </div>
-
-          <div className="admin-usage-card">
-            <p className="admin-usage-label">Gemini (오늘, 태평양 시간 기준 · 근사치)</p>
-            <p className="admin-usage-value">{todayGeminiCalls}회</p>
-            <p className="admin-usage-sub">구글 공식 쿼터 API가 없어 우리가 직접 센 호출 횟수입니다.</p>
-          </div>
-        </div>
-      </section>
-
-      {/* 패널 2: 일정 관리 — 직접 추가 + 자동/수동 전체 일정 조회 및 삭제(오검색·중복 정리용) */}
-      <section className="admin-panel">
-        <div className="admin-panel-header">
-          <h3>일정 관리</h3>
-        </div>
-        <p className="admin-panel-desc">
-          검색으로 찾지 못했거나 급하게 추가해야 하는 일정을 직접 등록합니다. 여기서 추가한 일정은
-          자동 검색이 다시 실행돼도 지워지지 않습니다. 아래 목록에서는 자동 검색으로 들어온 일정도
-          잘못됐거나 중복이면 바로 삭제할 수 있습니다.
-        </p>
-        <form className="admin-form" onSubmit={handleAddEvent}>
-          <label>
-            게임
-            <select value={formGameId} onChange={(event) => setFormGameId(event.target.value)} required>
-              <option value="">선택하세요</option>
-              {games.map((game) => (
-                <option key={game.id} value={game.id}>
-                  {game.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            카테고리
-            <select value={formCategory} onChange={(event) => setFormCategory(event.target.value)}>
-              {CATEGORY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            날짜
-            <input type="date" value={formDate} onChange={(event) => setFormDate(event.target.value)} required />
-          </label>
-
-          <label className="admin-form-wide">
-            제목
-            <input
-              type="text"
-              value={formTitle}
-              onChange={(event) => setFormTitle(event.target.value)}
-              placeholder="예: 6.4 버전 업데이트"
-              required
-            />
-          </label>
-
-          <label className="admin-form-wide">
-            메모 (선택)
-            <textarea value={formNote} onChange={(event) => setFormNote(event.target.value)} rows={2} />
-          </label>
-
-          <label className="admin-form-wide">
-            출처 URL (선택)
-            <input
-              type="url"
-              value={formSourceUrl}
-              onChange={(event) => setFormSourceUrl(event.target.value)}
-              placeholder="https://..."
-            />
-          </label>
-
-          <button type="submit" className="admin-form-submit" disabled={adding}>
-            {adding ? '추가하는 중...' : '일정 추가'}
-          </button>
-        </form>
-        {addMessage && <p className="status-message">{addMessage}</p>}
-
-        <div className="admin-panel-header">
-          <label>
-            월 선택
-            <input
-              type="month"
-              value={eventMonth}
-              onChange={(event) => {
-                setEventMonth(event.target.value)
-                loadEvents(eventFilterGameId, event.target.value)
-              }}
-            />
-          </label>
-          <label>
-            게임으로 필터
-            <select
-              value={eventFilterGameId}
-              onChange={(event) => {
-                setEventFilterGameId(event.target.value)
-                loadEvents(event.target.value, eventMonth)
-              }}
+      <div className="admin-body">
+        <nav className="admin-nav" aria-label="관리자 메뉴">
+          {ADMIN_SECTIONS.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              className={section.id === activeSection ? 'admin-nav-item active' : 'admin-nav-item'}
+              onClick={() => setActiveSection(section.id)}
             >
-              <option value="">전체</option>
-              {games.map((game) => (
-                <option key={game.id} value={game.id}>
-                  {game.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button type="button" onClick={() => loadEvents(eventFilterGameId, eventMonth)} disabled={eventsLoading}>
-            새로고침
-          </button>
+              {section.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="admin-content">
+          {/* 강제 업데이트 (수동 트리거) */}
+          {activeSection === 'trigger' && (
+            <section className="admin-panel">
+              <div className="admin-panel-header">
+                <h3>강제 업데이트</h3>
+                <button type="button" onClick={handleTrigger} disabled={triggering}>
+                  {triggering ? '실행 요청 중...' : '지금 검색 실행'}
+                </button>
+              </div>
+              {triggerMessage && <p className="status-message">{triggerMessage}</p>}
+              <p className="status-message">
+                오늘 업데이트된 게임: {gamesUpdatedToday.length > 0 ? gamesUpdatedToday.join(', ') : '아직 없음'}
+              </p>
+            </section>
+          )}
+
+          {/* API 사용량 — Tavily는 공식 /usage 응답, Gemini는 우리가 직접 센 근사치 */}
+          {activeSection === 'usage' && (
+            <section className="admin-panel">
+              <div className="admin-panel-header">
+                <h3>API 사용량</h3>
+                <button type="button" onClick={loadUsage} disabled={usageLoading}>
+                  새로고침
+                </button>
+              </div>
+              {usageError && <p className="status-message status-error">{usageError}</p>}
+              {usageLoading && <p className="status-message">불러오는 중...</p>}
+
+              <div className="admin-usage-cards">
+                <div className="admin-usage-card">
+                  <p className="admin-usage-label">Tavily (이번 결제 주기)</p>
+                  {usage?.key ? (
+                    <p className="admin-usage-value">
+                      {usage.key.usage ?? '-'} / {usage.key.limit ?? '무제한'} 크레딧
+                    </p>
+                  ) : (
+                    !usageLoading && <p className="admin-usage-value">-</p>
+                  )}
+                  {usage?.account?.current_plan && (
+                    <p className="admin-usage-sub">
+                      플랜: {usage.account.current_plan} ({usage.account.plan_usage ?? '-'} / {usage.account.plan_limit ?? '-'})
+                    </p>
+                  )}
+                </div>
+
+                <div className="admin-usage-card">
+                  <p className="admin-usage-label">Gemini (오늘, 태평양 시간 기준 · 근사치)</p>
+                  <p className="admin-usage-value">{todayGeminiCalls}회</p>
+                  <p className="admin-usage-sub">구글 공식 쿼터 API가 없어 우리가 직접 센 호출 횟수입니다.</p>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* 일정 관리 — 직접 추가 + 자동/수동 전체 일정 조회 및 삭제(오검색·중복 정리용) */}
+          {activeSection === 'events' && (
+            <section className="admin-panel">
+              <div className="admin-panel-header">
+                <h3>일정 관리</h3>
+              </div>
+              <p className="admin-panel-desc">
+                검색으로 찾지 못했거나 급하게 추가해야 하는 일정을 직접 등록합니다. 여기서 추가한 일정은
+                자동 검색이 다시 실행돼도 지워지지 않습니다. 아래 목록에서는 자동 검색으로 들어온 일정도
+                잘못됐거나 중복이면 바로 삭제할 수 있습니다.
+              </p>
+              <form className="admin-form" onSubmit={handleAddEvent}>
+                <label>
+                  게임
+                  <select value={formGameId} onChange={(event) => setFormGameId(event.target.value)} required>
+                    <option value="">선택하세요</option>
+                    {games.map((game) => (
+                      <option key={game.id} value={game.id}>
+                        {game.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  카테고리
+                  <select value={formCategory} onChange={(event) => setFormCategory(event.target.value)}>
+                    {CATEGORY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  날짜
+                  <input type="date" value={formDate} onChange={(event) => setFormDate(event.target.value)} required />
+                </label>
+
+                <label className="admin-form-wide">
+                  제목
+                  <input
+                    type="text"
+                    value={formTitle}
+                    onChange={(event) => setFormTitle(event.target.value)}
+                    placeholder="예: 6.4 버전 업데이트"
+                    required
+                  />
+                </label>
+
+                <label className="admin-form-wide">
+                  메모 (선택)
+                  <textarea value={formNote} onChange={(event) => setFormNote(event.target.value)} rows={2} />
+                </label>
+
+                <label className="admin-form-wide">
+                  출처 URL (선택)
+                  <input
+                    type="url"
+                    value={formSourceUrl}
+                    onChange={(event) => setFormSourceUrl(event.target.value)}
+                    placeholder="https://..."
+                  />
+                </label>
+
+                <button type="submit" className="admin-form-submit" disabled={adding}>
+                  {adding ? '추가하는 중...' : '일정 추가'}
+                </button>
+              </form>
+              {addMessage && <p className="status-message">{addMessage}</p>}
+
+              <div className="admin-panel-header">
+                <label>
+                  월 선택
+                  <input
+                    type="month"
+                    value={eventMonth}
+                    onChange={(event) => {
+                      setEventMonth(event.target.value)
+                      loadEvents(eventFilterGameId, event.target.value)
+                    }}
+                  />
+                </label>
+                <label>
+                  게임으로 필터
+                  <select
+                    value={eventFilterGameId}
+                    onChange={(event) => {
+                      setEventFilterGameId(event.target.value)
+                      loadEvents(event.target.value, eventMonth)
+                    }}
+                  >
+                    <option value="">전체</option>
+                    {games.map((game) => (
+                      <option key={game.id} value={game.id}>
+                        {game.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" onClick={() => loadEvents(eventFilterGameId, eventMonth)} disabled={eventsLoading}>
+                  새로고침
+                </button>
+              </div>
+
+              {eventsError && <p className="status-message status-error">{eventsError}</p>}
+              {eventsLoading && <p className="status-message">불러오는 중...</p>}
+
+              {events.length > 0 && (
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>날짜</th>
+                      <th>게임</th>
+                      <th>카테고리</th>
+                      <th>제목</th>
+                      <th>출처</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {events.map((item) => (
+                      <tr key={item.id}>
+                        <td>{item.event_date}</td>
+                        <td>{item.genre ?? '-'}</td>
+                        <td>{CATEGORY_OPTIONS.find((c) => c.value === item.category)?.label ?? item.category}</td>
+                        <td>{item.title}</td>
+                        <td>{item.source === 'manual' ? '수동' : '자동'}</td>
+                        <td>
+                          <button type="button" className="admin-table-delete" onClick={() => handleDeleteEvent(item.id)}>
+                            삭제
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {!eventsLoading && events.length === 0 && !eventsError && (
+                <p className="status-message">일정이 없습니다.</p>
+              )}
+            </section>
+          )}
+
+          {/* 실행 이력 — run_log 최근 30건 (성공/실패, 트리거 종류, 처리된 게임 수, 에러 메시지) */}
+          {activeSection === 'runs' && (
+            <section className="admin-panel">
+              <div className="admin-panel-header">
+                <h3>실행 이력</h3>
+                <button type="button" onClick={loadRuns} disabled={runsLoading}>
+                  새로고침
+                </button>
+              </div>
+              {runsError && <p className="status-message status-error">{runsError}</p>}
+              {runsLoading && <p className="status-message">불러오는 중...</p>}
+
+              {runs.length > 0 && (
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>시작</th>
+                      <th>종료</th>
+                      <th>상태</th>
+                      <th>트리거</th>
+                      <th>처리된 게임 수</th>
+                      <th>Gemini 호출</th>
+                      <th>에러</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {runs.map((run) => (
+                      <tr key={run.id}>
+                        <td>{formatDateTime(run.started_at)}</td>
+                        <td>{formatDateTime(run.finished_at)}</td>
+                        <td>
+                          <span className={`run-status run-status-${run.status}`}>{run.status}</span>
+                        </td>
+                        <td>{run.trigger_source}</td>
+                        <td>{run.games_processed ?? '-'}</td>
+                        <td>{run.gemini_calls ?? '-'}</td>
+                        <td>
+                          {run.error_message ? (
+                            // 에러 메시지가 길면 표가 한없이 늘어나므로, 기본은 접어두고 클릭해야 펼쳐진다.
+                            <details className="admin-error-details">
+                              <summary>에러 보기</summary>
+                              <p className="admin-error-detail-text">{run.error_message}</p>
+                            </details>
+                          ) : (
+                            '-'
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {!runsLoading && runs.length === 0 && !runsError && (
+                <p className="status-message">실행 이력이 없습니다.</p>
+              )}
+            </section>
+          )}
         </div>
-
-        {eventsError && <p className="status-message status-error">{eventsError}</p>}
-        {eventsLoading && <p className="status-message">불러오는 중...</p>}
-
-        {events.length > 0 && (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>날짜</th>
-                <th>게임</th>
-                <th>카테고리</th>
-                <th>제목</th>
-                <th>출처</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.event_date}</td>
-                  <td>{item.genre ?? '-'}</td>
-                  <td>{CATEGORY_OPTIONS.find((c) => c.value === item.category)?.label ?? item.category}</td>
-                  <td>{item.title}</td>
-                  <td>{item.source === 'manual' ? '수동' : '자동'}</td>
-                  <td>
-                    <button type="button" className="admin-table-delete" onClick={() => handleDeleteEvent(item.id)}>
-                      삭제
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-
-        {!eventsLoading && events.length === 0 && !eventsError && (
-          <p className="status-message">일정이 없습니다.</p>
-        )}
-      </section>
-
-      {/* 패널 3: 실행 이력 — run_log 최근 30건 (성공/실패, 트리거 종류, 처리된 게임 수, 에러 메시지) */}
-      <section className="admin-panel">
-        <div className="admin-panel-header">
-          <h3>실행 이력</h3>
-          <button type="button" onClick={loadRuns} disabled={runsLoading}>
-            새로고침
-          </button>
-        </div>
-        {runsError && <p className="status-message status-error">{runsError}</p>}
-        {runsLoading && <p className="status-message">불러오는 중...</p>}
-
-        {runs.length > 0 && (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>시작</th>
-                <th>종료</th>
-                <th>상태</th>
-                <th>트리거</th>
-                <th>처리된 게임 수</th>
-                <th>Gemini 호출</th>
-                <th>에러</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((run) => (
-                <tr key={run.id}>
-                  <td>{formatDateTime(run.started_at)}</td>
-                  <td>{formatDateTime(run.finished_at)}</td>
-                  <td>
-                    <span className={`run-status run-status-${run.status}`}>{run.status}</span>
-                  </td>
-                  <td>{run.trigger_source}</td>
-                  <td>{run.games_processed ?? '-'}</td>
-                  <td>{run.gemini_calls ?? '-'}</td>
-                  <td>
-                    {run.error_message ? (
-                      // 에러 메시지가 길면 표가 한없이 늘어나므로, 기본은 접어두고 클릭해야 펼쳐진다.
-                      <details className="admin-error-details">
-                        <summary>에러 보기</summary>
-                        <p className="admin-error-detail-text">{run.error_message}</p>
-                      </details>
-                    ) : (
-                      '-'
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-
-        {!runsLoading && runs.length === 0 && !runsError && (
-          <p className="status-message">실행 이력이 없습니다.</p>
-        )}
-      </section>
+      </div>
     </div>
   )
 }

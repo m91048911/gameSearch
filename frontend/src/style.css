@@ -663,12 +663,62 @@ a {
 /* ---- 관리자 페이지 ---- */
 
 .admin-shell {
-  max-width: 880px;
+  max-width: 1040px;
   margin: 0 auto;
   padding: 48px 24px;
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.admin-body {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.admin-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 180px;
+  flex-shrink: 0;
+}
+
+.admin-nav-item {
+  text-align: left;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-main);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.admin-nav-item.active {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--shadow);
+  color: var(--accent);
+}
+
+.admin-content {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .admin-body {
+    flex-direction: column;
+  }
+
+  .admin-nav {
+    flex-direction: row;
+    width: 100%;
+    overflow-x: auto;
+  }
 }
 
 .admin-login {
