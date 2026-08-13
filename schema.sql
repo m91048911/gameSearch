@@ -136,6 +136,11 @@ create table if not exists run_log (
 -- 이미 배포된 DB에는 위 create table이 no-op이라 컬럼이 따로 필요하면 아래를 실행:
 alter table run_log add column if not exists gemini_calls int not null default 0;
 
+-- 실행 이력에서 "처리된 게임 수"만으로는 어떤 게임인지 알 수 없어, 이번 실행에서 실제로 처리한
+-- 게임 이름 목록도 같이 남긴다 (게임 자체가 나중에 이름이 바뀌거나 지워져도 그 시점의 이름이 남도록
+-- games 테이블을 참조하지 않고 문자열 배열로 저장).
+alter table run_log add column if not exists games_processed_names text[] not null default '{}';
+
 alter table run_log enable row level security;
 
 drop policy if exists "admin can read run_log" on run_log;

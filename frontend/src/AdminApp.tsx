@@ -16,6 +16,7 @@ type RunLogRow = {
   status: string
   trigger_source: string
   games_processed: number | null
+  games_processed_names: string[] | null
   error_message: string | null
   gemini_calls: number | null
 }
@@ -733,7 +734,12 @@ function AdminApp() {
                           <span className={`run-status run-status-${run.status}`}>{run.status}</span>
                         </td>
                         <td>{run.trigger_source}</td>
-                        <td>{run.games_processed ?? '-'}</td>
+                        <td>
+                          {run.games_processed ?? '-'}
+                          {run.games_processed_names && run.games_processed_names.length > 0 && (
+                            <p className="admin-run-games">{run.games_processed_names.join(', ')}</p>
+                          )}
+                        </td>
                         <td>{run.gemini_calls ?? '-'}</td>
                         <td>
                           {run.error_message ? (

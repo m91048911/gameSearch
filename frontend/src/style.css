@@ -852,6 +852,13 @@ a {
   color: var(--text-subtle);
 }
 
+.admin-run-games {
+  margin: 4px 0 0;
+  max-width: 220px;
+  font-size: 12px;
+  color: var(--text-subtle);
+}
+
 .run-status {
   padding: 2px 10px;
   border-radius: 999px;

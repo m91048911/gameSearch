@@ -29,6 +29,8 @@ run_all_games(trigger_source)가 실제 배치 실행의 진입점이며, 시작
 admin_server.py(FastAPI)의 /run이 관리자 강제 실행 시 이 함수를 그대로 재사용한다 (trigger_source="manual").
 Gemini는 구글이 API 키로 조회 가능한 공식 사용량 엔드포인트를 제공하지 않으므로, run_log.gemini_calls에
 "이번 실행에서 실제로 호출한 횟수"(재시도 포함)를 직접 세서 기록한다 — 관리자 페이지의 근사치 표시용.
+run_log.games_processed_names에는 이번 실행에서 실제로 처리한 게임 이름 목록도 같이 남겨,
+관리자 페이지의 "처리된 게임 수"만으로 알 수 없는 "어떤 게임인지"를 보여준다.
 
 필요 환경변수 (.env):
   TAVILY_API_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY
@@ -493,7 +495,10 @@ def _start_run_log(client, trigger_source: str) -> int:
     return res.data[0]["id"]
 
 
-def _finish_run_log(client, run_id: int, status: str, games_processed: int, error_message: str = None, gemini_calls: int = 0):
+def _finish_run_log(
+    client, run_id: int, status: str, games_processed: int, error_message: str = None,
+    gemini_calls: int = 0, games_processed_names: list = None,
+):
     client.table("run_log").update(
         {
             "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -501,6 +506,7 @@ def _finish_run_log(client, run_id: int, status: str, games_processed: int, erro
             "games_processed": games_processed,
             "error_message": error_message,
             "gemini_calls": gemini_calls,
+            "games_processed_names": games_processed_names or [],
         }
     ).eq("id", run_id).execute()
 
@@ -545,6 +551,7 @@ def run_all_games(trigger_source: str = "cron") -> dict:
         )
 
         processed = 0
+        processed_names = []
         errors = []
         for i, game in enumerate(games):
             game_name = game.get("name_ko") or game.get("name_en")
@@ -565,6 +572,7 @@ def run_all_games(trigger_source: str = "cron") -> dict:
             if not topics_to_search:
                 log(f"[{game_name}] 모든 주제가 확정된 미래 일정이 있어 검색을 건너뜁니다.")
                 processed += 1
+                processed_names.append(game_name)
                 if i < len(games) - 1:
                     time.sleep(5)
                 continue
@@ -580,6 +588,7 @@ def run_all_games(trigger_source: str = "cron") -> dict:
             for t in topics_to_search:
                 save_events(supabase, game_id, game_name, t, result.get(t["id"], []))
             processed += 1
+            processed_names.append(game_name)
 
             # 1GB RAM 인스턴스 + API rate limit 보호를 위해 게임 사이 간격을 둔다.
             if i < len(games) - 1:
@@ -590,6 +599,7 @@ def run_all_games(trigger_source: str = "cron") -> dict:
             supabase, run_id, status=status, games_processed=processed,
             error_message="; ".join(errors) if errors else None,
             gemini_calls=get_gemini_call_count(),
+            games_processed_names=processed_names,
         )
         log(f"전체 처리 완료 (성공 {processed}/{len(games)}, Gemini 호출 {get_gemini_call_count()}회)")
         return {"processed": processed, "total": len(games), "errors": errors}
