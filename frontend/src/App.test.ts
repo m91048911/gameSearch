@@ -72,13 +72,24 @@ describe('categoryLabel', () => {
 })
 
 describe('colorForGame', () => {
-  it('같은 이름은 항상 같은 색을 반환한다', () => {
-    expect(colorForGame('원신')).toBe(colorForGame('원신'))
+  const games = ['원신', '붕괴 스타레일', '젠레스존제로', '명일방주', '명일방주 엔드필드', '명조', '퍼니싱: 그레이 레이븐', '니케 승리의 여신', '스텔라 소라']
+
+  it('같은 목록에서 같은 이름은 항상 같은 색을 반환한다', () => {
+    expect(colorForGame(games, '원신')).toBe(colorForGame(games, '원신'))
   })
 
   it('색상 팔레트 안의 값만 반환한다', () => {
-    const color = colorForGame('니케 승리의 여신')
+    const color = colorForGame(games, '니케 승리의 여신')
     expect(color).toMatch(/^#[0-9a-f]{6}$/i)
+  })
+
+  it('팔레트 크기 안에서는 게임마다 서로 다른 색을 받는다 (인덱스 기반 배정)', () => {
+    const colors = games.map((game) => colorForGame(games, game))
+    expect(new Set(colors).size).toBe(games.length)
+  })
+
+  it('목록에 없는 이름은 해시 기반으로 배정하되, 같은 이름은 항상 같은 색을 반환한다', () => {
+    expect(colorForGame(games, '지워진 게임')).toBe(colorForGame(games, '지워진 게임'))
   })
 })
 

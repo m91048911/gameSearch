@@ -53,7 +53,9 @@ export function categoryLabel(key: string): string {
   return CATEGORY_LABELS[key] ?? key
 }
 
-// 게임 이름마다 항상 같은 색이 나오도록 이름을 해시해서 팔레트에서 고른다.
+// 게임 색상 팔레트. 게임이 늘어나면서(9종) 이름 해시만으로 색을 고르면 같은 색이 자주 겹쳤다
+// (팔레트 10칸에 9개를 해시로 흩뿌리면 충돌 확률이 꽤 높다 - 생일 문제). 그래서 colorForGame이
+// 지금 화면에 있는 게임 목록에서의 순서(인덱스)로 배정하도록 바꿨고, 팔레트도 16칸으로 넉넉히 늘렸다.
 const GAME_COLOR_PALETTE = [
   '#6366f1', // indigo
   '#ec4899', // pink
@@ -65,6 +67,12 @@ const GAME_COLOR_PALETTE = [
   '#0ea5e9', // sky
   '#84cc16', // lime
   '#f97316', // orange
+  '#14b8a6', // teal
+  '#d946ef', // fuchsia
+  '#eab308', // yellow
+  '#64748b', // slate
+  '#f43f5e', // rose
+  '#3b82f6', // blue
 ]
 
 // 방문자 수의 "오늘" 기준은 한국시간(Asia/Seoul) 자정이다 — schema.sql의 increment_site_visits()가
@@ -74,7 +82,15 @@ export function koreaDateString(date: Date): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(date)
 }
 
-export function colorForGame(name: string): string {
+// games는 화면에 보이는 전체 게임 목록(순서 고정) — 그 안에서의 인덱스로 색을 배정하면
+// 팔레트 크기 안에서는 게임마다 항상 서로 다른 색이 나온다. 목록에 없는 이름(예: 지워진 게임의
+// 과거 이벤트)은 이름을 해시해서 배정한다 — 인덱스 기반 배정은 못 하지만 최소한 같은 이름은
+// 항상 같은 색을 받는다.
+export function colorForGame(games: string[], name: string): string {
+  const index = games.indexOf(name)
+  if (index !== -1) {
+    return GAME_COLOR_PALETTE[index % GAME_COLOR_PALETTE.length]
+  }
   let hash = 0
   for (let i = 0; i < name.length; i += 1) {
     hash = (hash * 31 + name.charCodeAt(i)) >>> 0
@@ -373,7 +389,7 @@ function App() {
                       key={game}
                       type="button"
                       className={game === selectedGame ? 'legend-chip active' : 'legend-chip'}
-                      style={{ '--chip-color': colorForGame(game) } as CSSProperties}
+                      style={{ '--chip-color': colorForGame(games, game) } as CSSProperties}
                       onClick={() => setSelectedGame((cur) => (cur === game ? null : game))}
                     >
                       <span className="legend-dot" />
@@ -508,7 +524,7 @@ function App() {
 
                       <div className="calendar-events">
                         {dayEvents.slice(0, 2).map((item) => (
-                          <div key={item.id} className="event-chip" style={{ borderLeftColor: colorForGame(item.game) }}>
+                          <div key={item.id} className="event-chip" style={{ borderLeftColor: colorForGame(games, item.game) }}>
                             <strong>{item.title}</strong>
                             <span>{item.game}</span>
                           </div>
@@ -554,10 +570,10 @@ function App() {
 
             <div className="modal-list">
               {selectedEvents.map((item) => (
-                <article key={item.id} className="modal-item" style={{ borderLeftColor: colorForGame(item.game) }}>
+                <article key={item.id} className="modal-item" style={{ borderLeftColor: colorForGame(games, item.game) }}>
                   <div className="modal-item-main">
                     <div className="modal-item-tags">
-                      <span className="game-dot" style={{ backgroundColor: colorForGame(item.game) }} />
+                      <span className="game-dot" style={{ backgroundColor: colorForGame(games, item.game) }} />
                       <span className="modal-game">{item.game}</span>
                       <span className="modal-category">{categoryLabel(item.category)}</span>
                       {item.verified === true && <span className="verify-badge verify-true">확인됨</span>}
