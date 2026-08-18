@@ -109,6 +109,39 @@ def test_drop_unknown_source_urls_handles_missing_source_url(raw_results):
     assert cleaned["version_update"] == []
 
 
+# ---- _drop_cross_topic_duplicates ------------------------------------------
+# 실제 운영 중 발견된 버그: Gemini 1차 추출이 모든 주제를 한 번에 처리하다 보니, 같은 실제
+# 사건("연합 토벌 시즌 10 시작" 등)이 완전히 같은 제목으로 서로 다른 주제(카테고리)에 중복 저장됐다.
+
+
+@pytest.fixture
+def dedup_topics():
+    return [{"id": "broadcast"}, {"id": "pickup"}, {"id": "update"}]
+
+
+def test_drop_cross_topic_duplicates_removes_identical_title_in_later_topic(dedup_topics):
+    events = {
+        "broadcast": [{"date": "2026-08-01", "title": "연합 토벌 시즌 10 시작", "source_url": "https://x.com/a"}],
+        "pickup": [{"date": "2026-08-01", "title": "연합 토벌 시즌 10 시작", "source_url": "https://x.com/a"}],
+        "update": [],
+    }
+    cleaned = gs._drop_cross_topic_duplicates(events, dedup_topics)
+    assert len(cleaned["broadcast"]) == 1  # topics 순서상 먼저 나오는 쪽(broadcast)이 남는다
+    assert cleaned["pickup"] == []
+
+
+def test_drop_cross_topic_duplicates_keeps_events_with_different_titles(dedup_topics):
+    """같은 날짜·같은 출처라도 제목이 다르면(같은 공지 안의 서로 다른 사건일 수 있음) 그대로 둔다."""
+    events = {
+        "broadcast": [],
+        "pickup": [{"date": "2026-08-12", "title": "아를레키노 픽업 시작", "source_url": "https://genshin.hoyoverse.com/m/ko/news"}],
+        "update": [{"date": "2026-08-12", "title": "7.0 버전 업데이트", "source_url": "https://genshin.hoyoverse.com/m/ko/news"}],
+    }
+    cleaned = gs._drop_cross_topic_duplicates(events, dedup_topics)
+    assert len(cleaned["pickup"]) == 1
+    assert len(cleaned["update"]) == 1
+
+
 # ---- _generate_content_with_retry -----------------------------------------
 
 

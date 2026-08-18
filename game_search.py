@@ -373,6 +373,31 @@ def _drop_unknown_source_urls(events_by_topic: dict, raw_results: dict) -> dict:
     return cleaned
 
 
+def _drop_cross_topic_duplicates(events_by_topic: dict, topics: list) -> dict:
+    """Gemini 1차 추출은 모든 주제를 한 번의 호출로 동시에 처리하다 보니, 같은 실제 사건을 서로 다른
+    주제(topic)에 중복으로 넣는 경우가 실제 운영 중 발견됐다 (예: '연합 토벌 시즌 10 시작'이
+    broadcast/pickup 양쪽에 완전히 같은 제목으로 들어감). 프롬프트에 넣지 말라고 지시해도 100%
+    지켜진다는 보장이 없으니, (날짜, source_url, 제목)이 완전히 같은 항목만 중복으로 보고
+    topics 순서상 먼저 나오는 주제 쪽만 남긴다.
+
+    제목이 조금이라도 다르면 건드리지 않는다 — 같은 공지 하나가 실제로 서로 다른 두 사건(예:
+    버전 업데이트 + 캐릭터 픽업 시작)을 함께 발표하는 경우가 흔해서, 제목까지 같지 않은 이상
+    "같은 사건"이라고 단정할 수 없기 때문이다."""
+    seen = set()
+    cleaned = {}
+    for t in topics:
+        topic_id = t["id"]
+        kept = []
+        for e in events_by_topic.get(topic_id, []):
+            key = (e.get("date"), e.get("source_url"), e.get("title"))
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append(e)
+        cleaned[topic_id] = kept
+    return cleaned
+
+
 def extract_with_gemini(client: genai.Client, game_name: str, topics: list, raw_results: dict):
     """Gemini에게 원본 검색 결과를 주고, 캘린더에 바로 찍을 수 있는 날짜별 이벤트 목록을 추출시킨다.
     한 주제 안에 날짜가 여러 개면(예: 버전별 업데이트, 픽업 전반/후반) 각각 별도 항목으로 나눈다."""
@@ -392,6 +417,9 @@ def extract_with_gemini(client: genai.Client, game_name: str, topics: list, raw_
 
 규칙:
 - 한 주제 안에 날짜가 여러 개 있으면(예: 6.3/6.4/6.5 버전별 업데이트, 픽업 전반부/후반부) 각각을 별도 항목으로 나눠라.
+- 같은 실제 사건을 여러 주제에 중복으로 넣지 마라. 예를 들어 "픽업이 끝난다"와 "한정 채널이 끝난다"가
+  같은 사건을 가리키거나, "코스튬 판매"와 "코스튬 판매 시작"이 같은 발표를 가리키면, 그 사건과 가장
+  관련이 큰 주제 하나에만 넣어라. 같은 발표를 주제별로 표현만 바꿔서 여러 번 넣지 마라.
 - date는 반드시 YYYY-MM-DD 형식. 연도가 검색 결과에 명시되지 않았으면 {date.today().year}년으로 가정하라.
 - 정보를 전혀 찾을 수 없는 주제는 빈 배열 []로 남겨라.
 - source_url은 반드시 <search_results> 안 sources 목록에 있는 url 중 하나를 정확히(글자 그대로) 복사해야 한다. 지어내거나 변형하지 마라.
@@ -479,6 +507,7 @@ def run_for_game(
     """게임 하나에 대해 검색 → 추출 → 검증을 실행하고, {topic_id: [event, ...]} 형태로 반환한다."""
     raw_results = collect_raw_results(tavily, game_name, topics, official_domains)
     extracted = extract_with_gemini(gemini_client, game_name, topics, raw_results)
+    extracted = _drop_cross_topic_duplicates(extracted, topics)
     verified = verify_with_gemini(gemini_client, game_name, topics, extracted, raw_results)
     return {t["id"]: verified.get(t["id"], []) for t in topics}
 
