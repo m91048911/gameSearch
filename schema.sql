@@ -101,6 +101,15 @@ create index if not exists game_events_date_idx on game_events (event_date);
 -- 관리자가 직접 추가한 'manual' 행은 자동 실행에 영향받지 않고 계속 남는다.
 alter table game_events add column if not exists source text not null default 'search';
 
+-- 실제 운영 중 (game_id, topic_id, event_date)는 같지만 제목만 다르게 중복 저장되는 문제가 발견됐다
+-- (같은 실행 안에서 Gemini가 같은 공지를 두 번 추출하는 경우 등). 애플리케이션 코드의 사전 체크만으로는
+-- 이런 경우를 다 못 잡아서, DB 레벨에서 같은 (game_id, topic_id, event_date, source_url) 조합을
+-- 아예 막는 유니크 인덱스를 추가하고 save_events()가 upsert(ignore_duplicates=True)로 이 인덱스를
+-- 그대로 활용하도록 바꿨다 (game_search.py 참고). topic_id/source_url이 NULL인 관리자 직접 추가
+-- 행('manual')은 Postgres가 NULL끼리 다른 값으로 취급해 이 제약에 걸리지 않는다.
+create unique index if not exists game_events_dedup_idx
+  on game_events (game_id, topic_id, event_date, source_url);
+
 -- 공개 캘린더(/api/events, anon key)는 계속 읽을 수 있어야 하고, 쓰기(추가/수정/삭제)는
 -- 관리자 본인 로그인 세션에서만 가능해야 한다. 크론/FastAPI는 SUPABASE_KEY(서비스 롤)로 쓰기 때문에
 -- 아래 RLS와 무관하게 항상 동작한다.

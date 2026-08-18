@@ -172,8 +172,7 @@ def _valid_iso_date(value) -> bool:
 
 def save_events(client, game_id, game_name: str, topic: dict, events: list):
     """이 (game_id, topic) 조합의 기존 '자동 검색' 이벤트 중 아직 지나지 않은(오늘 이후) 것만 지우고
-    새로 검색된 이벤트로 갈아끼운다. (game_events는 매일 새로 계산되는 결과라 upsert보다
-    delete-then-insert가 단순하고 안전하다.)
+    새로 검색된 이벤트로 갈아끼운다.
 
     과거 날짜(event_date < 오늘) 이벤트는 이 delete 대상에서 제외한다 — 한 번 확인된 과거 일정은
     캘린더의 이력으로 남아야 하는데, 재검색은 보통 "다가오는" 일정 위주라 지난 일정을 다시 찾아내지
@@ -182,11 +181,20 @@ def save_events(client, game_id, game_name: str, topic: dict, events: list):
     그런데 과거 이벤트를 안 지우기 시작하면서 새로운 문제가 생겼다: 이미 지나간 이벤트를 재검색이
     다시 찾아내면(같은 공지를 Gemini가 제목만 살짝 다르게 재추출하는 경우가 흔함) delete 대상이
     아니니 그대로 둔 채 또 insert돼서 같은 이벤트가 중복 저장된다(실제 운영 중 발견된 버그).
-    그래서 (event_date, source_url)이 이미 저장돼 있는 이벤트는 제목이 달라도 새로 넣지 않는다 —
-    source_url은 Gemini가 제목을 어떻게 다르게 쓰든 항상 같은 원본 공지를 가리키므로, 제목보다
-    신뢰할 수 있는 "같은 이벤트인지" 판별 기준이다.
 
-    source='manual'인 행(관리자 페이지에서 직접 추가한 일정)은 이 함수가 절대 건드리지 않는다."""
+    처음엔 이걸 select로 기존 (event_date, source_url)을 미리 가져와 애플리케이션 코드에서
+    걸러내는 방식으로 막았는데, 운영 중 확인해보니 중복이 계속 쌓이고 있었다 — 같은 실행 한 번
+    안에서 Gemini가 같은 이벤트를 두 번 추출해내는 경우(추출 결과 리스트 자체에 중복이 있는 경우)는
+    이 select가 "실행 전 DB 상태"만 보기 때문에 못 잡았다. 그래서 game_events에
+    (game_id, topic_id, event_date, source_url) 유니크 인덱스를 걸고(schema.sql 참고),
+    select 없이 upsert(ignore_duplicates=True)로 DB가 직접 중복을 막도록 바꿨다 — 이러면 기존
+    행과의 중복이든 같은 배치 안에서의 중복이든 한 번에 걸러진다. source_url은 Gemini가 제목을
+    어떻게 다르게 쓰든 항상 같은 원본 공지를 가리키므로, 제목보다 신뢰할 수 있는 "같은 이벤트인지"
+    판별 기준이다.
+
+    source='manual'인 행(관리자 페이지에서 직접 추가한 일정)은 이 함수가 절대 건드리지 않는다 —
+    manual 행은 topic_id가 항상 NULL이라(관리자 페이지 폼 참고) 이 유니크 인덱스에 걸리지 않는다
+    (Postgres는 NULL끼리는 서로 다른 값으로 취급해 유니크 제약을 위반하지 않는다)."""
     if game_id is None:
         return  # CLI 테스트 모드(DB에 없는 게임)에서는 저장하지 않음
 
@@ -217,19 +225,11 @@ def save_events(client, game_id, game_name: str, topic: dict, events: list):
     if not rows:
         return
 
-    existing = (
-        client.table("game_events")
-        .select("event_date,source_url")
-        .eq("game_id", game_id)
-        .eq("topic_id", topic_id)
-        .eq("source", "search")
-        .execute()
-    )
-    existing_keys = {(r["event_date"], r["source_url"]) for r in (existing.data or [])}
-
-    new_rows = [r for r in rows if (r["event_date"], r["source_url"]) not in existing_keys]
-    if new_rows:
-        client.table("game_events").insert(new_rows).execute()
+    client.table("game_events").upsert(
+        rows,
+        on_conflict="game_id,topic_id,event_date,source_url",
+        ignore_duplicates=True,
+    ).execute()
 
 
 def search_topic(
