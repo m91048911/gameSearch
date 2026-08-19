@@ -437,14 +437,14 @@ function App() {
           <div className="hero-stats">
             <div>
               <span>전체 일정</span>
-              <strong>{items.length}</strong>
+              <strong>{items.length}건</strong>
             </div>
             <div>
               <span>오늘 일정</span>
               <strong>
                 {todayItems.length === 1
                   ? `${todayItems[0].game} · ${todayItems[0].title}`
-                  : todayItems.length}
+                  : todayItems.length + '건'}
               </strong>
             </div>
             <div>
