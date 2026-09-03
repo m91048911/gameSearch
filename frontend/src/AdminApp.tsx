@@ -84,6 +84,7 @@ type EventRow = {
   note: string | null
   source_url: string | null
   source: string
+  checked_at?: string
 }
 
 // App.tsx의 CATEGORY_LABELS/CATEGORY_ORDER와 같은 값. 캘린더 카테고리가 이 4개로 고정돼 있어
@@ -98,12 +99,13 @@ const CATEGORY_OPTIONS: { value: string; label: string }[] = [
 // 관리자 페이지 좌측 메뉴. 패널이 늘어나면서 한 페이지에 전부 세로로 나열하면 너무 길어져,
 // 메뉴로 골라서 하나씩만 보도록 나눴다. 데이터 로딩(loadRuns/loadGames/loadEvents/loadUsage)은
 // 그대로 로그인 시점에 한 번에 해두고(4.4/4.5 참고), 메뉴 전환은 어떤 패널을 보여줄지만 바꾼다.
-type AdminSectionId = 'trigger' | 'usage' | 'events' | 'runs'
+type AdminSectionId = 'trigger' | 'usage' | 'events' | 'today_added' | 'runs'
 
 const ADMIN_SECTIONS: { id: AdminSectionId; label: string }[] = [
   { id: 'trigger', label: '강제 업데이트' },
   { id: 'usage', label: 'API 사용량' },
   { id: 'events', label: '일정 관리' },
+  { id: 'today_added', label: '오늘 추가된 일정' },
   { id: 'runs', label: '실행 이력' },
 ]
 
@@ -122,6 +124,15 @@ export function monthRange(month: string): { start: string; end: string } {
   const [year, m] = month.split('-').map(Number)
   const lastDay = new Date(year, m, 0).getDate() // m은 1~12 → new Date(y, m, 0)은 그 달의 마지막 날
   return { start: `${month}-01`, end: `${month}-${String(lastDay).padStart(2, '0')}` }
+}
+
+// "오늘 추가된 일정" 필터용 — game_events.checked_at(timestamptz)은 이 행이 처음 저장된 시각이다
+// (upsert의 ignore_duplicates=True 덕분에, 이미 있던 행은 재검색이 돼도 checked_at이 갱신되지 않는다 —
+// game_search.py의 save_events 참고). 한국 자정~다음 자정 범위를 +09:00 오프셋을 붙인 타임스탬프로
+// 직접 만들어서 비교한다 (한국은 서머타임이 없어 고정 오프셋으로 충분하다).
+export function koreaDayRange(now: Date = new Date()): { start: string; end: string } {
+  const day = koreaDateString(now)
+  return { start: `${day}T00:00:00+09:00`, end: `${day}T23:59:59.999+09:00` }
 }
 
 // "오늘 업데이트된 게임" 판정. games.last_searched_at은 크론/수동 실행이 그 게임을 처리할 때마다
@@ -169,6 +180,11 @@ function AdminApp() {
   const [eventsLoading, setEventsLoading] = useState(false)
   const [eventFilterGameId, setEventFilterGameId] = useState('')
   const [eventMonth, setEventMonth] = useState(() => currentMonthString())
+
+  // "오늘 추가된 일정" 패널 상태
+  const [todayAddedEvents, setTodayAddedEvents] = useState<EventRow[]>([])
+  const [todayAddedError, setTodayAddedError] = useState('')
+  const [todayAddedLoading, setTodayAddedLoading] = useState(false)
 
   // "일정 직접 추가" 폼 입력값들
   const [formGameId, setFormGameId] = useState('')
@@ -274,6 +290,28 @@ function AdminApp() {
     setEventsLoading(false)
   }
 
+  // "오늘 추가된 일정" 조회. checked_at이 오늘(한국 시간) 안에 드는 행만 가져온다 — 새로 저장된
+  // 행만 걸러지고, 이미 있던 행이 재검색 때 다시 확인만 되고 그대로 남은 경우는 안 걸린다.
+  const loadTodayAdded = async () => {
+    setTodayAddedLoading(true)
+    setTodayAddedError('')
+
+    const { start, end } = koreaDayRange()
+    const { data, error } = await supabase
+      .from('game_events')
+      .select('id, event_date, title, category, genre, note, source_url, source, checked_at')
+      .gte('checked_at', start)
+      .lte('checked_at', end)
+      .order('checked_at', { ascending: false })
+
+    if (error) {
+      setTodayAddedError(error.message)
+    } else {
+      setTodayAddedEvents((data ?? []) as EventRow[])
+    }
+    setTodayAddedLoading(false)
+  }
+
   // Tavily 사용량 조회. trigger-run.ts와 같은 패턴 — 로그인 세션의 access_token을 실어
   // /api/admin/usage(Vercel 서버리스 함수)에 보내면, 그 함수가 관리자 여부를 확인하고
   // Tailscale Funnel로 오라클 VM의 /usage(=Tavily 공식 GET /usage 프록시)를 대신 호출한다.
@@ -309,6 +347,7 @@ function AdminApp() {
       loadRuns()
       loadGames()
       loadEvents('', eventMonth)
+      loadTodayAdded()
       loadUsage()
     }
   }, [session])
@@ -372,6 +411,7 @@ function AdminApp() {
       setEventsError(error.message)
     } else {
       setEvents((prev) => prev.filter((e) => e.id !== id))
+      setTodayAddedEvents((prev) => prev.filter((e) => e.id !== id))
     }
   }
 
@@ -696,6 +736,62 @@ function AdminApp() {
 
               {!eventsLoading && events.length === 0 && !eventsError && (
                 <p className="status-message">일정이 없습니다.</p>
+              )}
+            </section>
+          )}
+
+          {/* 오늘 추가된 일정 — checked_at이 오늘(한국 시간)인 행만. 새로 저장된 것만 걸러진다 */}
+          {activeSection === 'today_added' && (
+            <section className="admin-panel">
+              <div className="admin-panel-header">
+                <h3>오늘 추가된 일정</h3>
+                <button type="button" onClick={loadTodayAdded} disabled={todayAddedLoading}>
+                  새로고침
+                </button>
+              </div>
+              <p className="admin-panel-desc">
+                오늘(한국 시간 기준) 새로 저장된 일정만 보여줍니다. 이미 있던 일정이 재검색으로 다시
+                확인만 된 경우는 여기 나오지 않습니다.
+              </p>
+
+              {todayAddedError && <p className="status-message status-error">{todayAddedError}</p>}
+              {todayAddedLoading && <p className="status-message">불러오는 중...</p>}
+
+              {todayAddedEvents.length > 0 && (
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>추가 시각</th>
+                      <th>일정 날짜</th>
+                      <th>게임</th>
+                      <th>카테고리</th>
+                      <th>제목</th>
+                      <th>출처</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {todayAddedEvents.map((item) => (
+                      <tr key={item.id}>
+                        <td>{formatDateTime(item.checked_at ?? null)}</td>
+                        <td>{item.event_date}</td>
+                        <td>{item.genre ?? '-'}</td>
+                        <td>{CATEGORY_OPTIONS.find((c) => c.value === item.category)?.label ?? item.category}</td>
+                        <td>{item.title}</td>
+                        <td>{item.source === 'manual' ? '수동' : '자동'}</td>
+                        <td>
+                          <button type="button" className="admin-table-delete" onClick={() => handleDeleteEvent(item.id)}>
+                            삭제
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {!todayAddedLoading && todayAddedEvents.length === 0 && !todayAddedError && (
+                <p className="status-message">오늘 새로 추가된 일정이 없습니다.</p>
               )}
             </section>
           )}

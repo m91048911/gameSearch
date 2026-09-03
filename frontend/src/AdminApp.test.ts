@@ -16,6 +16,7 @@ const {
   currentMonthString,
   monthRange,
   gamesUpdatedTodayList,
+  koreaDayRange,
 } = await import('./AdminApp')
 
 describe('isAdminSessionExpired', () => {
@@ -33,6 +34,17 @@ describe('isAdminSessionExpired', () => {
   it('로그인한 지 24시간이 지났으면 만료다', () => {
     const loginAt = now.getTime() - 25 * 60 * 60 * 1000 // 25시간 전
     expect(isAdminSessionExpired(loginAt, now)).toBe(true)
+  })
+})
+
+describe('koreaDayRange', () => {
+  it('한국 시간 기준 그 날의 00:00:00 ~ 23:59:59.999를 +09:00 오프셋으로 반환한다', () => {
+    // 2026-07-22T15:30:00Z = 한국시간 2026-07-23 00:30
+    const utc = new Date('2026-07-22T15:30:00Z')
+    expect(koreaDayRange(utc)).toEqual({
+      start: '2026-07-23T00:00:00+09:00',
+      end: '2026-07-23T23:59:59.999+09:00',
+    })
   })
 })
 
