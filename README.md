@@ -2,6 +2,8 @@
 
 게임별 버전 업데이트/캐릭터 픽업/공식방송 일정을 자동으로 검색해 공개 캘린더로 보여주는 시스템.
 
+https://game-search-ai.vercel.app
+
 - `game_search.py` — Supabase의 games/topics를 읽어 Tavily+Gemini로 검색·검증하고 `game_events`에 저장 (오라클 VM에서 cron으로 3일마다 실행)
 - `admin_server.py` — 관리자 강제 실행용 FastAPI 서버 (오라클 VM에서 상시 실행, Tailscale Funnel로 노출)
 - `frontend/` — 공개 캘린더(Vite+React) + `/admin` 관리자 페이지, Vercel 배포
